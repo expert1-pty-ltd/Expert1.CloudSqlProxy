@@ -4,7 +4,21 @@ namespace Expert1.CloudSqlProxy
 {
     internal static class Utilities
     {
-        public const string UserAgent = "cloud_sql_proxy/1.35.4";
+        private static string _userAgent;
+        public static string UserAgent
+        {
+            get
+            {
+                if (string.IsNullOrWhiteSpace(_userAgent))
+                {
+                    _userAgent = $"Expert1.CloudSqlProxy/{GetVersion()}";
+                }
+
+                return _userAgent;
+            }
+        }
+
+        private static string GetVersion() => typeof(ProxyInstance).Assembly.GetName().Version.ToString(3);
 
         public static (string project, string region, string name) SplitName(string instance)
         {
