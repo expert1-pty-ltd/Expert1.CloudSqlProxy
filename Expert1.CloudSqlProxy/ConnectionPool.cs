@@ -18,6 +18,12 @@ namespace Expert1.CloudSqlProxy
         private readonly string _serverAddress;
         private readonly int _serverPort;
         private readonly Timer _cleanupTimer;
+        private bool _disposed = false;
+#if NET9_0_OR_GREATER
+        private readonly Lock _disposeLock = new();
+#else
+        private readonly object _disposeLock = new();
+#endif
 
         /// <summary>
         /// Initializes a new instance of the <see cref="ConnectionPool"/> class.
@@ -80,7 +86,11 @@ namespace Expert1.CloudSqlProxy
                 connection.Dispose();
             }
 
-            _semaphore.Release();
+            lock (_disposeLock)
+            {
+                if (_disposed) return;
+                _semaphore.Release();
+            }
         }
 
         public async Task PrepareConnectionAsync(CancellationToken cancellationToken)
@@ -129,12 +139,18 @@ namespace Expert1.CloudSqlProxy
         /// </summary>
         public void Dispose()
         {
-            _cleanupTimer.Dispose();
-            while (_pool.TryTake(out TcpClient connection))
+            lock (_disposeLock)
             {
-                connection.Dispose();
+                if (_disposed) return;
+                _disposed = true;
+
+                _cleanupTimer.Dispose();
+                while (_pool.TryTake(out TcpClient connection))
+                {
+                    connection.Dispose();
+                }
+                _semaphore.Dispose();
             }
-            _semaphore.Dispose();
         }
     }
 }
