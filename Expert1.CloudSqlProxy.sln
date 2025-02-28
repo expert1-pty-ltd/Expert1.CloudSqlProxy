@@ -7,6 +7,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Expert1.CloudSqlProxy", "Ex
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ConsoleTest", "ConsoleTest\ConsoleTest.csproj", "{E75AF9C1-0783-4582-80F9-EA03151B9639}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "WebAPITest", "WebAPITest\WebAPITest.csproj", "{406D3D9E-FB30-4E8D-B10C-FFA269841BDD}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -21,6 +23,10 @@ Global
 		{E75AF9C1-0783-4582-80F9-EA03151B9639}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{E75AF9C1-0783-4582-80F9-EA03151B9639}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{E75AF9C1-0783-4582-80F9-EA03151B9639}.Release|Any CPU.Build.0 = Release|Any CPU
+		{406D3D9E-FB30-4E8D-B10C-FFA269841BDD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{406D3D9E-FB30-4E8D-B10C-FFA269841BDD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{406D3D9E-FB30-4E8D-B10C-FFA269841BDD}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{406D3D9E-FB30-4E8D-B10C-FFA269841BDD}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
