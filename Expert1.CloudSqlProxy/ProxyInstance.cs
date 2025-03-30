@@ -208,27 +208,44 @@ namespace Expert1.CloudSqlProxy
                 using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(globalCancellationToken);
                 CancellationToken cancellationToken = connectionCts.Token;
 
-                TcpClient serverConnection = await connectionPool.AcquireConnectionAsync(cancellationToken);
-                try
+                while (!cancellationToken.IsCancellationRequested)
                 {
-                    using NetworkStream clientStream = client.GetStream();
+                    TcpClient serverConnection = await connectionPool.AcquireConnectionAsync(cancellationToken);
+                    try
+                    {
+                        using NetworkStream clientStream = client.GetStream();
 
-                    using NetworkStream serverStream = serverConnection.GetStream();
-                    using SslStream sslStream = await SetupSecureConnectionAsync(serverStream);
+                        using NetworkStream serverStream = serverConnection.GetStream();
+                        using SslStream sslStream = await SetupSecureConnectionAsync(serverStream);
 
-                    // Set up forwarding between client and server
-                    Task clientToServerTask = ProxyTrafficAsync(clientStream, sslStream, cancellationToken);
-                    Task serverToClientTask = ProxyTrafficAsync(sslStream, clientStream, cancellationToken);
+                        // Get the actual certificate bound to this SslStream
+                        X509Certificate2 actualClientCert = sslStream.LocalCertificate as X509Certificate2;
+                        DateTime notAfter = actualClientCert.NotAfter;
 
-                    await Task.WhenAny(clientToServerTask, serverToClientTask);
+                        // Set up forwarding between client and server
+                        Task clientToServerTask = ProxyTrafficAsync(clientStream, sslStream, notAfter, cancellationToken);
+                        Task serverToClientTask = ProxyTrafficAsync(sslStream, clientStream, notAfter, cancellationToken);
 
-                    // Ensure cancellation is requested for the other connection task
-                    connectionCts.Cancel();
-                    await Task.WhenAll(clientToServerTask, serverToClientTask);
-                }
-                finally
-                {
-                    connectionPool.ReleaseConnection(serverConnection);
+                        await Task.WhenAny(clientToServerTask, serverToClientTask);
+
+                        bool expired = DateTime.UtcNow >= notAfter.AddMinutes(-2);
+
+                        // Ensure cancellation is requested for the other connection task
+                        connectionCts.Cancel();
+                        await Task.WhenAll(clientToServerTask, serverToClientTask);
+
+                        if (expired && clientCert.NotAfter <= DateTime.UtcNow.AddMinutes(5))
+                        {
+                            await SetupCertificatesAsync();
+                            continue; // re-enter loop with new certs
+                        }
+
+                        break;
+                    }
+                    finally
+                    {
+                        connectionPool.ReleaseConnection(serverConnection);
+                    }
                 }
             }
             catch (OperationCanceledException)
@@ -237,7 +254,7 @@ namespace Expert1.CloudSqlProxy
             }
         }
 
-        private static async Task ProxyTrafficAsync(Stream input, Stream output, CancellationToken cancellationToken)
+        private static async Task ProxyTrafficAsync(Stream input, Stream output, DateTime notAfter, CancellationToken cancellationToken)
         {
             byte[] buffer = ArrayPool<byte>.Shared.Rent(8192);
             try
@@ -245,6 +262,9 @@ namespace Expert1.CloudSqlProxy
                 Array.Clear(buffer, 0, buffer.Length); // Zero out the buffer
                 while (!cancellationToken.IsCancellationRequested)
                 {
+                    if (DateTime.UtcNow >= notAfter.AddMinutes(-2))
+                        break;
+
                     int bytesRead = await input.ReadAsync(buffer, cancellationToken);
                     if (bytesRead == 0)
                     {
