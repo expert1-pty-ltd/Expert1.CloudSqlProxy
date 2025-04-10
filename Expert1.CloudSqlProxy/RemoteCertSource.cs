@@ -14,15 +14,33 @@ namespace Expert1.CloudSqlProxy
     /// secure connections to Google Cloud SQL instances. Handles RSA key generation,
     /// and fetching ephemeral certificates from the Cloud SQL Admin API.
     /// </summary>
-    internal sealed class RemoteCertSource(SQLAdminService service)
+    internal sealed class RemoteCertSource
     {
 #if NET9_0_OR_GREATER
         private readonly Lock keyLock = new();
 #else
         private readonly object keyLock = new();
 #endif
+        private readonly SemaphoreSlim certLock = new(1, 1);
+        private readonly SQLAdminService service;
         private RSA privateKey;
-        private readonly SQLAdminService service = service;
+        private X509Certificate2 clientCert;
+        private static readonly TimeSpan refreshWindow = TimeSpan.FromMinutes(15);
+        private static readonly TimeSpan baseBackoff = TimeSpan.FromMilliseconds(200);
+        private readonly CancellationTokenSource refreshCts;
+        private readonly Task refreshTask;
+        private readonly string project;
+        private readonly string regionName;
+        private string publicKeyPem;
+        
+        public RemoteCertSource(SQLAdminService service, string instance)
+        {
+            this.service = service;
+            (project, string region, string name) = Utilities.SplitName(instance);
+            regionName = $"{region}~{name}";
+            refreshCts = new();
+            refreshTask = Task.Run(() => BackgroundRefreshLoop(refreshCts.Token));
+        }
 
         private RSA GenerateKey()
         {
@@ -32,37 +50,73 @@ namespace Expert1.CloudSqlProxy
                 {
                     privateKey = RSA.Create();
                     privateKey.KeySize = 2048;
+                    publicKeyPem = privateKey.ExportSubjectPublicKeyInfoPem();
                 }
+                
                 return privateKey;
             }
         }
 
-        public async Task<X509Certificate2> GetCertificateAsync(string instance)
+        private async Task BackgroundRefreshLoop(CancellationToken token)
         {
-            RSA key = GenerateKey();
-            (string project, string region, string name) = Utilities.SplitName(instance);
-            string regionName = $"{region}~{name}";
-            string publicKey = key.ExportSubjectPublicKeyInfoPem();
-            GenerateEphemeralCertRequest generateCertRequest = new()
+            while (!token.IsCancellationRequested)
             {
-                PublicKey = publicKey
-            };
+                try
+                {
+                    await Task.Delay(TimeSpan.FromMinutes(50), token);
+                    await GetValidClientCertificateAsync(); // Will refresh if needed
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+            }
+        }
 
-            ConnectResource.GenerateEphemeralCertRequest request = service.Connect.GenerateEphemeralCert(generateCertRequest, project, regionName);
-            GenerateEphemeralCertResponse response = await RetryWithBackoffAsync(() => request.ExecuteAsync());
-            using X509Certificate2 certificate = X509Certificate2.CreateFromPem(response.EphemeralCert.Cert.AsSpan());
-            X509Certificate2 certWithKey = certificate.CopyWithPrivateKey(key);
-            byte[] pfxData = certWithKey.Export(X509ContentType.Pkcs12);
+        public void StopBackgroundRefresh()
+        {
+            refreshCts?.Cancel();
+            refreshTask?.Wait();
+            refreshCts?.Dispose();
+        }
+
+        public async Task<X509Certificate2> GetValidClientCertificateAsync()
+        {
+            await certLock.WaitAsync();
+            try
+            {
+                if (clientCert != null && clientCert.NotAfter > DateTime.UtcNow.Add(refreshWindow))
+                {
+                    return clientCert;
+                }
+
+                RSA key = GenerateKey();                
+                GenerateEphemeralCertRequest generateCertRequest = new()
+                {
+                    PublicKey = publicKeyPem
+                };
+
+                ConnectResource.GenerateEphemeralCertRequest request = service.Connect.GenerateEphemeralCert(generateCertRequest, project, regionName);
+                GenerateEphemeralCertResponse response = await RetryWithBackoffAsync(() => request.ExecuteAsync());
+                using X509Certificate2 certificate = X509Certificate2.CreateFromPem(response.EphemeralCert.Cert.AsSpan());
+                X509Certificate2 certWithKey = certificate.CopyWithPrivateKey(key);
+                byte[] pfxData = certWithKey.Export(X509ContentType.Pkcs12);
 #if NET9_0_OR_GREATER
-            return X509CertificateLoader.LoadPkcs12(pfxData, password: null);
+                clientCert =  X509CertificateLoader.LoadPkcs12(pfxData, password: null);
 #else
-            return new X509Certificate2(pfxData);
+                clientCert = new X509Certificate2(pfxData);
 #endif
+                return clientCert;
+            }
+            finally
+            {
+                certLock.Release();
+            }
         }
 
         private static async Task<T> RetryWithBackoffAsync<T>(Func<Task<T>> action, int retries = 5)
         {
-            TimeSpan baseBackoff = TimeSpan.FromMilliseconds(200);
+            
             double backoffMultiplier = 1.618;
 
             for (int i = 0; i < retries; i++)
@@ -81,12 +135,6 @@ namespace Expert1.CloudSqlProxy
         }
 
         private static bool IsRetryableException(Exception ex)
-        {
-            if (ex is GoogleApiException gex)
-            {
-                return (int)gex.HttpStatusCode >= 500;
-            }
-            return false;
-        }
+            => ex is GoogleApiException gex && (int)gex.HttpStatusCode >= 500;
     }
 }
