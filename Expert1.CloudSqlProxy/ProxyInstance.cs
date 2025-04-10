@@ -38,6 +38,7 @@ namespace Expert1.CloudSqlProxy
         private X509Certificate2 clientCert;
         private X509Certificate2 serverCaCert;
         private ConnectionPool connectionPool;
+        private readonly SemaphoreSlim certLock = new(1, 1);
 
         /// <summary>
         /// Google Cloud SQL Instance string
@@ -142,7 +143,8 @@ namespace Expert1.CloudSqlProxy
         internal async Task StartAsync()
         {
             cts = new CancellationTokenSource();
-            await SetupCertificatesAsync();
+            await SetupServerCertificateAsync();
+            await RefreshClientCertificateAsync();
             await SetupConnectionPool();
 
             listener = new TcpListener(IPAddress.Loopback, 0); // Listen on a random port
@@ -159,11 +161,26 @@ namespace Expert1.CloudSqlProxy
             connectionPool = new ConnectionPool(serverIp, SQL_PORT, MAX_POOL_SIZE, TimeSpan.FromMinutes(CONNECTION_IDLE_TIMEOUT_MIN));
         }
 
-        private async Task SetupCertificatesAsync()
+        private async Task SetupServerCertificateAsync()
         {
-            ConnectSettings connectSettings = await sqlAdminService.Connect.Get(project, instanceId).ExecuteAsync(cts.Token);
-            serverCaCert = X509Certificate2.CreateFromPem(connectSettings.ServerCaCert.Cert.AsSpan());
-            clientCert = await certSource.GetCertificateAsync(Instance);
+            if (serverCaCert == null)
+            {
+                ConnectSettings connectSettings = await sqlAdminService.Connect.Get(project, instanceId).ExecuteAsync(cts.Token);
+                serverCaCert = X509Certificate2.CreateFromPem(connectSettings.ServerCaCert.Cert.AsSpan());
+            }
+        }
+
+        private async Task RefreshClientCertificateAsync()
+        {
+            await certLock.WaitAsync();
+            try
+            {
+                clientCert = await certSource.GetCertificateAsync(Instance);
+            }
+            finally
+            {
+                certLock.Release();
+            }
         }
 
         private async Task RefreshCertificatesPeriodicallyAsync()
@@ -173,7 +190,7 @@ namespace Expert1.CloudSqlProxy
                 try
                 {
                     await Task.Delay(TimeSpan.FromMinutes(CERT_REFRESH_MIN), cts.Token);
-                    await SetupCertificatesAsync();
+                    await RefreshClientCertificateAsync();
                 }
                 catch (OperationCanceledException)
                 {
@@ -208,44 +225,27 @@ namespace Expert1.CloudSqlProxy
                 using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(globalCancellationToken);
                 CancellationToken cancellationToken = connectionCts.Token;
 
-                while (!cancellationToken.IsCancellationRequested)
+                TcpClient serverConnection = await connectionPool.AcquireConnectionAsync(cancellationToken);
+                try
                 {
-                    TcpClient serverConnection = await connectionPool.AcquireConnectionAsync(cancellationToken);
-                    try
-                    {
-                        using NetworkStream clientStream = client.GetStream();
+                    using NetworkStream clientStream = client.GetStream();
 
-                        using NetworkStream serverStream = serverConnection.GetStream();
-                        using SslStream sslStream = await SetupSecureConnectionAsync(serverStream);
+                    using NetworkStream serverStream = serverConnection.GetStream();
+                    using SslStream sslStream = await SetupSecureConnectionAsync(serverStream);
 
-                        // Get the actual certificate bound to this SslStream
-                        X509Certificate2 actualClientCert = sslStream.LocalCertificate as X509Certificate2;
-                        DateTime notAfter = actualClientCert.NotAfter;
+                    // Set up forwarding between client and server
+                    Task clientToServerTask = ProxyTrafficAsync(clientStream, sslStream, cancellationToken);
+                    Task serverToClientTask = ProxyTrafficAsync(sslStream, clientStream, cancellationToken);
 
-                        // Set up forwarding between client and server
-                        Task clientToServerTask = ProxyTrafficAsync(clientStream, sslStream, notAfter, cancellationToken);
-                        Task serverToClientTask = ProxyTrafficAsync(sslStream, clientStream, notAfter, cancellationToken);
+                    await Task.WhenAny(clientToServerTask, serverToClientTask);
 
-                        await Task.WhenAny(clientToServerTask, serverToClientTask);
-
-                        bool expired = DateTime.UtcNow >= notAfter.AddMinutes(-2);
-
-                        // Ensure cancellation is requested for the other connection task
-                        connectionCts.Cancel();
-                        await Task.WhenAll(clientToServerTask, serverToClientTask);
-
-                        if (expired && clientCert.NotAfter <= DateTime.UtcNow.AddMinutes(5))
-                        {
-                            await SetupCertificatesAsync();
-                            continue; // re-enter loop with new certs
-                        }
-
-                        break;
-                    }
-                    finally
-                    {
-                        connectionPool.ReleaseConnection(serverConnection);
-                    }
+                    // Ensure cancellation is requested for the other connection task
+                    connectionCts.Cancel();
+                    await Task.WhenAll(clientToServerTask, serverToClientTask);
+                }
+                finally
+                {
+                    connectionPool.ReleaseConnection(serverConnection);
                 }
             }
             catch (OperationCanceledException)
@@ -254,7 +254,7 @@ namespace Expert1.CloudSqlProxy
             }
         }
 
-        private static async Task ProxyTrafficAsync(Stream input, Stream output, DateTime notAfter, CancellationToken cancellationToken)
+        private static async Task ProxyTrafficAsync(Stream input, Stream output, CancellationToken cancellationToken)
         {
             byte[] buffer = ArrayPool<byte>.Shared.Rent(8192);
             try
@@ -262,9 +262,6 @@ namespace Expert1.CloudSqlProxy
                 Array.Clear(buffer, 0, buffer.Length); // Zero out the buffer
                 while (!cancellationToken.IsCancellationRequested)
                 {
-                    if (DateTime.UtcNow >= notAfter.AddMinutes(-2))
-                        break;
-
                     int bytesRead = await input.ReadAsync(buffer, cancellationToken);
                     if (bytesRead == 0)
                     {
@@ -291,9 +288,10 @@ namespace Expert1.CloudSqlProxy
 
         private async Task<SslStream> SetupSecureConnectionAsync(NetworkStream networkStream)
         {
+            X509Certificate2 cert = await GetClientCertificateAsync();
             X509Certificate2Collection certCollection =
             [
-                clientCert,
+                cert,
                 serverCaCert
             ];
             SslStream sslStream = new(networkStream, false, new RemoteCertificateValidationCallback(ValidateServerCertificate));
@@ -318,6 +316,24 @@ namespace Expert1.CloudSqlProxy
             // Ensure the server certificate is issued by the CA certificate we added
             X509ChainElement providedRoot = chain.ChainElements[^1]; // Root CA is last or something is broken
             return serverCaCert.Thumbprint == providedRoot.Certificate.Thumbprint; // Is expected Root CA
+        }
+
+        private async Task<X509Certificate2> GetClientCertificateAsync()
+        {
+            await certLock.WaitAsync();
+            try
+            {
+                if (clientCert is null || clientCert.NotAfter <= DateTime.UtcNow.AddMinutes(15))
+                {
+                    clientCert = await certSource.GetCertificateAsync(Instance);
+                }
+
+                return clientCert;
+            }
+            finally
+            {
+                certLock.Release();
+            }
         }
     }
 }
