@@ -27,6 +27,7 @@ namespace Expert1.CloudSqlProxy
         private X509Certificate2 clientCert;
         private static readonly TimeSpan refreshWindow = TimeSpan.FromMinutes(15);
         private static readonly TimeSpan baseBackoff = TimeSpan.FromMilliseconds(200);
+        private static readonly TimeSpan refershLoopTime = TimeSpan.FromMinutes(50);
         private readonly CancellationTokenSource refreshCts;
         private readonly Task refreshTask;
         private readonly string project;
@@ -63,7 +64,7 @@ namespace Expert1.CloudSqlProxy
             {
                 try
                 {
-                    await Task.Delay(TimeSpan.FromMinutes(50), token);
+                    await Task.Delay(refershLoopTime, token);
                     await GetValidClientCertificateAsync(); // Will refresh if needed
                 }
                 catch (OperationCanceledException)
@@ -85,7 +86,8 @@ namespace Expert1.CloudSqlProxy
             await certLock.WaitAsync();
             try
             {
-                if (clientCert != null && clientCert.NotAfter > DateTime.UtcNow.Add(refreshWindow))
+                // X509Certificate2.NotAfter is in LocalTime so compare to DateTime.Now
+                if (clientCert != null && clientCert.NotAfter > DateTime.Now.Add(refreshWindow))
                 {
                     return clientCert;
                 }
