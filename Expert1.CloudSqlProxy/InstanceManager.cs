@@ -1,4 +1,6 @@
-﻿using System.Collections.Concurrent;
+﻿using System;
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -11,56 +13,74 @@ namespace Expert1.CloudSqlProxy
     /// </summary>
     internal static class InstanceManager
     {
-        private static readonly ConcurrentDictionary<string, (ProxyInstance instance, TaskCompletionSource<bool> connectionTaskSource, int refCount)> activeInstances = new();
+        private static readonly ConcurrentDictionary<string, ActiveInstancesEntry> activeInstances = new();
 
-        public static async Task<ProxyInstance> GetOrCreateInstanceAsync(AuthenticationMethod authenticationMethod, string instance, string credentials)
+        public static async Task<ProxyInstance> GetOrCreateInstanceAsync(
+            AuthenticationMethod authenticationMethod,
+            string instance,
+            string credentials)
         {
             string key = instance;
 
-            // Try to get an existing instance
-            if (activeInstances.TryGetValue(key, out (ProxyInstance instance, TaskCompletionSource<bool> connectionTaskSource, int refCount) existingEntry))
+            // Get or create the entry (cheap)
+            ActiveInstancesEntry entry = activeInstances.GetOrAdd(key, _ => new() { RefCount = 0 });
+
+            // Increment real shared refcount
+            Interlocked.Increment(ref entry.RefCount);
+
+            // Exactly one thread creates + starts the instance
+            if (Interlocked.CompareExchange(ref entry.CreateStarted, 1, 0) == 0)
             {
-                Interlocked.Increment(ref existingEntry.refCount);
-                await existingEntry.connectionTaskSource.Task; // Await until the connection is established or fails
-                return existingEntry.instance;
-            }
-
-            // If no existing instance, create a new one
-            TaskCompletionSource<bool> newConnectionTaskSource = new();
-            ProxyInstance newInstance = new(authenticationMethod, instance, credentials);
-
-            (ProxyInstance instance, TaskCompletionSource<bool> connectionTaskSource, int refCount) result = activeInstances.GetOrAdd(key, (newInstance, newConnectionTaskSource, 1));
-
-            if (result.instance == newInstance)
-            {
-                // This means a new instance was created and we need to start it
-                _ = newInstance.StartAsync().ContinueWith(t =>
+                _ = Task.Run(async () =>
                 {
-                    if (t.IsFaulted)
+                    try
                     {
-                        newConnectionTaskSource.TrySetException(t.Exception);
+                        ProxyInstance created = new(authenticationMethod, instance, credentials);
+                        entry.Instance = created;
+
+                        await created.StartAsync().ConfigureAwait(false);
+                        entry.ReadyTcs.TrySetResult(true);
                     }
-                    else
+                    catch (Exception ex)
                     {
-                        newConnectionTaskSource.TrySetResult(true);
+                        entry.ReadyTcs.TrySetException(ex);
+
+                        // Ensure dictionary doesn't hold a permanently broken entry
+                        activeInstances.TryRemove(key, out _);
+
+                        // If we did create an instance, stop/cleanup it safely
+                        try { entry.Instance?.Stop(); } catch { /* swallow */ }
                     }
                 });
             }
 
-            await result.connectionTaskSource.Task; // Await until the connection is established or fails
-            return result.instance;
+            // Await readiness (or failure)
+            await entry.ReadyTcs.Task.ConfigureAwait(false);
+
+            // If ReadyTcs completed successfully, Instance must be non-null
+            return entry.Instance!;
         }
 
         public static void RemoveInstance(ProxyInstance instance)
         {
             string key = instance.Instance;
-            if (activeInstances.TryGetValue(key, out var entry))
+
+            if (!activeInstances.TryGetValue(key, out var entry))
+                return;
+
+            int newCount = Interlocked.Decrement(ref entry.RefCount);
+
+            if (newCount == 0)
             {
-                if (Interlocked.Decrement(ref entry.refCount) == 0)
+                // Ensure only one thread wins the right to stop/cleanup
+                if (activeInstances.TryRemove(key, out var removed))
                 {
-                    entry.instance.Stop();
-                    activeInstances.TryRemove(key, out _);
+                    removed.Instance.Stop();
                 }
+            }
+            else if (newCount < 0)
+            {
+                Debug.Fail($"Refcount for {key} dropped below zero");
             }
         }
 
@@ -68,9 +88,9 @@ namespace Expert1.CloudSqlProxy
         {
             foreach (string key in activeInstances.Keys)
             {
-                if (activeInstances.TryRemove(key, out (ProxyInstance instance, TaskCompletionSource<bool> connectionTaskSource, int refCount) value))
+                if (activeInstances.TryRemove(key, out ActiveInstancesEntry value))
                 {
-                    value.instance.Stop();
+                    value.Instance.Stop();
                 }
             }
         }
