@@ -11,5 +11,6 @@ namespace Expert1.CloudSqlProxy
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public ProxyInstance? Instance;
+        public int AuthMode;
     }
 }

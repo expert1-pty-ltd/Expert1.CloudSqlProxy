@@ -1,4 +1,5 @@
-﻿using Google.Apis.Auth.OAuth2;
+﻿using Expert1.CloudSqlProxy.Auth;
+using Google.Apis.Auth.OAuth2;
 using Google.Apis.Services;
 using Google.Apis.SQLAdmin.v1beta4;
 using Google.Apis.SQLAdmin.v1beta4.Data;
@@ -57,6 +58,19 @@ namespace Expert1.CloudSqlProxy
             certSource = new RemoteCertSource(sqlAdminService, instance);
         }
 
+        internal ProxyInstance(string instance, IAccessTokenSource accessTokenSource)
+        {
+            (project, region, instanceId) = Utilities.SplitName(instance);
+
+            sqlAdminService = new SQLAdminService(new BaseClientService.Initializer
+            {
+                HttpClientInitializer = new AccessTokenHttpClientInitializer(accessTokenSource),
+                ApplicationName = Utilities.UserAgent
+            });
+
+            certSource = new RemoteCertSource(sqlAdminService, instance);
+        }
+
         /// <summary>
         /// The port number that the proxy is listening on.
         /// </summary>
@@ -81,6 +95,31 @@ namespace Expert1.CloudSqlProxy
             ProxyInstance proxyInstance = await InstanceManager.GetOrCreateInstanceAsync(authenticationMethod, instance, credentials).ConfigureAwait(false);
             await proxyInstance.PrepareConnectionAsync().ConfigureAwait(false);
             return proxyInstance;
+        }
+
+        /// <summary>
+        /// Start the proxy instance. This method will block until the proxy is connected.
+        /// </summary>
+        /// <param name="instance">Cloud SQL instance connection name.</param>
+        /// <param name="accessTokenSource">Source for Google Cloud access tokens.</param>
+        public static async Task<ProxyInstance> StartProxyAsync(
+            string instance,
+            IAccessTokenSource accessTokenSource)
+        {
+            ProxyInstance proxyInstance = await InstanceManager.GetOrCreateInstanceAsync(instance, accessTokenSource).ConfigureAwait(false);
+
+            await proxyInstance.PrepareConnectionAsync().ConfigureAwait(false);
+            return proxyInstance;
+        }
+
+        /// <summary>
+        /// Start the proxy instance. This method will block until the proxy is connected.
+        /// </summary>
+        public static ProxyInstance StartProxy(
+            string instance,
+            IAccessTokenSource accessTokenSource)
+        {
+            return StartProxyAsync(instance, accessTokenSource).GetAwaiter().GetResult();
         }
 
         /// <summary>
@@ -115,7 +154,7 @@ namespace Expert1.CloudSqlProxy
             try
             {
                 // Stop and clear the listener
-                listener.Stop();
+                listener?.Stop();
                 listener = null;
 
                 // Wait for the tasks to complete or handle the cancellation exception
@@ -130,9 +169,9 @@ namespace Expert1.CloudSqlProxy
             {
                 // Dispose of the CancellationTokenSource
                 cts.Dispose();
-                certSource.StopBackgroundRefresh();
-                sqlAdminService.Dispose();
-                connectionPool.Dispose();
+                certSource?.StopBackgroundRefresh();
+                sqlAdminService?.Dispose();
+                connectionPool?.Dispose();
             }
         }
 
