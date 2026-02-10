@@ -33,7 +33,7 @@ namespace Expert1.CloudSqlProxy
         private readonly string project;
         private readonly string regionName;
         private string publicKeyPem;
-        
+
         public RemoteCertSource(SQLAdminService service, string instance)
         {
             this.service = service;
@@ -53,7 +53,7 @@ namespace Expert1.CloudSqlProxy
                     privateKey.KeySize = 2048;
                     publicKeyPem = privateKey.ExportSubjectPublicKeyInfoPem();
                 }
-                
+
                 return privateKey;
             }
         }
@@ -65,7 +65,7 @@ namespace Expert1.CloudSqlProxy
                 try
                 {
                     await Task.Delay(refershLoopTime, token);
-                    await GetValidClientCertificateAsync(); // Will refresh if needed
+                    await GetValidClientCertificateAsync(token); // Will refresh if needed
                 }
                 catch (OperationCanceledException)
                 {
@@ -81,9 +81,9 @@ namespace Expert1.CloudSqlProxy
             refreshCts?.Dispose();
         }
 
-        public async Task<X509Certificate2> GetValidClientCertificateAsync()
+        public async Task<X509Certificate2> GetValidClientCertificateAsync(CancellationToken cancellationToken)
         {
-            await certLock.WaitAsync();
+            await certLock.WaitAsync(cancellationToken);
             try
             {
                 // X509Certificate2.NotAfter is in LocalTime so compare to DateTime.Now
@@ -92,19 +92,19 @@ namespace Expert1.CloudSqlProxy
                     return clientCert;
                 }
 
-                RSA key = GenerateKey();                
+                RSA key = GenerateKey();
                 GenerateEphemeralCertRequest generateCertRequest = new()
                 {
                     PublicKey = publicKeyPem
                 };
 
                 ConnectResource.GenerateEphemeralCertRequest request = service.Connect.GenerateEphemeralCert(generateCertRequest, project, regionName);
-                GenerateEphemeralCertResponse response = await RetryWithBackoffAsync(() => request.ExecuteAsync());
+                GenerateEphemeralCertResponse response = await RetryWithBackoffAsync(() => request.ExecuteAsync(cancellationToken), cancellationToken: cancellationToken);
                 using X509Certificate2 certificate = X509Certificate2.CreateFromPem(response.EphemeralCert.Cert.AsSpan());
                 X509Certificate2 certWithKey = certificate.CopyWithPrivateKey(key);
                 byte[] pfxData = certWithKey.Export(X509ContentType.Pkcs12);
 #if NET9_0_OR_GREATER
-                clientCert =  X509CertificateLoader.LoadPkcs12(pfxData, password: null);
+                clientCert = X509CertificateLoader.LoadPkcs12(pfxData, password: null);
 #else
                 clientCert = new X509Certificate2(pfxData);
 #endif
@@ -116,9 +116,12 @@ namespace Expert1.CloudSqlProxy
             }
         }
 
-        private static async Task<T> RetryWithBackoffAsync<T>(Func<Task<T>> action, int retries = 5)
+        private static async Task<T> RetryWithBackoffAsync<T>(
+            Func<Task<T>> action,
+            int retries = 5,
+            CancellationToken cancellationToken = default)
         {
-            
+
             double backoffMultiplier = 1.618;
 
             for (int i = 0; i < retries; i++)
@@ -130,7 +133,7 @@ namespace Expert1.CloudSqlProxy
                 catch (Exception ex) when (IsRetryableException(ex))
                 {
                     TimeSpan backoff = TimeSpan.FromMilliseconds(baseBackoff.TotalMilliseconds * Math.Pow(backoffMultiplier, i + 1));
-                    await Task.Delay(backoff);
+                    await Task.Delay(backoff, cancellationToken);
                 }
             }
             return await action();

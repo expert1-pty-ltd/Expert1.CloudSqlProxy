@@ -253,7 +253,7 @@ namespace Expert1.CloudSqlProxy
                     using NetworkStream clientStream = client.GetStream();
 
                     using NetworkStream serverStream = serverConnection.GetStream();
-                    using SslStream sslStream = await SetupSecureConnectionAsync(serverStream);
+                    using SslStream sslStream = await SetupSecureConnectionAsync(serverStream, cancellationToken);
 
                     // Set up forwarding between client and server
                     Task clientToServerTask = ProxyTrafficAsync(clientStream, sslStream, cancellationToken);
@@ -308,12 +308,18 @@ namespace Expert1.CloudSqlProxy
             }
         }
 
-        private async Task<SslStream> SetupSecureConnectionAsync(NetworkStream networkStream)
+        private async Task<SslStream> SetupSecureConnectionAsync(
+            NetworkStream networkStream,
+            CancellationToken cancellationToken)
         {
-            X509Certificate2 cert = await certSource.GetValidClientCertificateAsync();
+            X509Certificate2 cert = await certSource.GetValidClientCertificateAsync(cancellationToken);
             X509Certificate2Collection certCollection = [cert];
             SslStream sslStream = new(networkStream, false, new RemoteCertificateValidationCallback(ValidateServerCertificate));
-            await sslStream.AuthenticateAsClientAsync(TargetHost, certCollection, SslProtocols.Tls13, checkCertificateRevocation: false);
+            await sslStream.AuthenticateAsClientAsync(
+                TargetHost,
+                certCollection,
+                SslProtocols.Tls13,
+                checkCertificateRevocation: false);
             return sslStream;
         }
 
