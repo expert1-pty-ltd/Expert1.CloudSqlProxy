@@ -6,6 +6,7 @@ using Google.Apis.SQLAdmin.v1beta4.Data;
 using System;
 using System.Buffers;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
@@ -190,8 +191,26 @@ namespace Expert1.CloudSqlProxy
         private async Task SetupConnectionPool()
         {
             DatabaseInstance instanceDetails = await sqlAdminService.Instances.Get(project, instanceId).ExecuteAsync();
-            string serverIp = instanceDetails.IpAddresses[0].IpAddress; // Get the first IP address
-            connectionPool = new ConnectionPool(serverIp, SQL_PORT, MAX_POOL_SIZE, TimeSpan.FromMinutes(CONNECTION_IDLE_TIMEOUT_MIN));
+            
+            string serverIp =
+                instanceDetails.IpAddresses?
+                    .FirstOrDefault(x => string.Equals(x.Type, "PRIMARY", StringComparison.OrdinalIgnoreCase))
+                    ?.IpAddress
+                ?? instanceDetails.IpAddresses?
+                    .FirstOrDefault(x => string.Equals(x.Type, "PRIVATE", StringComparison.OrdinalIgnoreCase))
+                    ?.IpAddress
+                ?? instanceDetails.IpAddresses?
+                    .FirstOrDefault()
+                    ?.IpAddress;
+
+            if (string.IsNullOrWhiteSpace(serverIp))
+                throw new InvalidOperationException("Cloud SQL instance has no usable IP addresses.");
+
+            connectionPool = new ConnectionPool(
+                serverIp,
+                SQL_PORT,
+                MAX_POOL_SIZE,
+                TimeSpan.FromMinutes(CONNECTION_IDLE_TIMEOUT_MIN));
         }
 
         private async Task SetupServerCertificateAsync()
