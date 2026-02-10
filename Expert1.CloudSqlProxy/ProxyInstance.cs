@@ -305,21 +305,29 @@ namespace Expert1.CloudSqlProxy
 
         private bool ValidateServerCertificate(object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors sslPolicyErrors)
         {
-            if (sslPolicyErrors == SslPolicyErrors.None)
-            {
-                return true; // Certificate is valid
-            }
+            // We require X509Certificate2 for proper chain validation
+            if (certificate is not X509Certificate2 cert)
+                return false;
 
-            // Validate against the server CA certificate
-            chain.ChainPolicy.ExtraStore.Add(serverCaCert);
-            if (chain.Build((X509Certificate2)certificate))
-            {
-                return true;
-            }
+            // Enforce strict certificate pinning:
+            // - Ignore all system/root CAs
+            // - Trust ONLY the Cloud SQL server CA we fetched
+            chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
 
-            // Ensure the server certificate is issued by the CA certificate we added
-            X509ChainElement providedRoot = chain.ChainElements[^1]; // Root CA is last or something is broken
-            return serverCaCert.Thumbprint == providedRoot.Certificate.Thumbprint; // Is expected Root CA
+            // Ensure no accidental roots linger
+            chain.ChainPolicy.CustomTrustStore.Clear();
+            chain.ChainPolicy.CustomTrustStore.Add(serverCaCert);
+
+            // Cloud SQL certs do not require revocation checking here
+            chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+
+            // Perform a full verification with no relaxations
+            chain.ChainPolicy.VerificationFlags = X509VerificationFlags.NoFlag;
+
+            // Build the chain:
+            // - Succeeds ONLY if the server certificate chains to serverCaCert
+            // - Fails if it chains to any system or public CA
+            return chain.Build(cert);
         }
     }
 }
