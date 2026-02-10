@@ -61,9 +61,10 @@ namespace Expert1.CloudSqlProxy
             await _semaphore.WaitAsync(cancellationToken);
 
             // Try to reuse an existing connection
-            if (_pool.TryTake(out TcpClient connection) && IsConnectionValid(connection))
+            if (_pool.TryTake(out TcpClient connection))
             {
-                return connection;
+                if (IsConnectionValid(connection)) return connection;
+                connection.Dispose();
             }
 
             // Create a new connection if none are available
