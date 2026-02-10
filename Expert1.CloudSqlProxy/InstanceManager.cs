@@ -14,7 +14,7 @@ namespace Expert1.CloudSqlProxy;
 /// </summary>
 internal static class InstanceManager
 {
-    private static readonly ConcurrentDictionary<string, ActiveInstancesEntry> activeInstances = new();
+    private static readonly ConcurrentDictionary<string, ActiveInstancesEntry> activeInstances = new(StringComparer.OrdinalIgnoreCase);
 
     public static Task<ProxyInstance> GetOrCreateInstanceAsync(
         AuthenticationMethod authenticationMethod,
@@ -42,6 +42,7 @@ internal static class InstanceManager
         int authMode,
         Func<ProxyInstance> createInstance)
     {
+        key = Utilities.NormalizeInstanceName(key);
         ActiveInstancesEntry entry = activeInstances.GetOrAdd(key, _ => new() { RefCount = 0 });
 
         // Fail fast if someone tries to create the same instance with a different auth mode.

@@ -69,5 +69,13 @@ namespace Expert1.CloudSqlProxy
                 return (project, region, name);
             }
         }
+
+        public static string NormalizeInstanceName(string instance)
+        {
+            var (project, region, instanceId) = SplitName(instance);
+
+            // canonical internal format
+            return $"{project}:{region}:{instanceId}";
+        }
     }
 }
