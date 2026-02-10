@@ -263,7 +263,6 @@ namespace Expert1.CloudSqlProxy
             byte[] buffer = ArrayPool<byte>.Shared.Rent(8192);
             try
             {
-                Array.Clear(buffer, 0, buffer.Length); // Zero out the buffer
                 while (!cancellationToken.IsCancellationRequested)
                 {
                     int bytesRead = await input.ReadAsync(buffer, cancellationToken);
