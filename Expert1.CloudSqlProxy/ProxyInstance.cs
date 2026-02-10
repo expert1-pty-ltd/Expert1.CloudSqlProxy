@@ -249,6 +249,7 @@ namespace Expert1.CloudSqlProxy
                 finally
                 {
                     connectionPool.ReleaseConnection(serverConnection);
+                    client.Dispose();
                 }
             }
             catch (OperationCanceledException)
