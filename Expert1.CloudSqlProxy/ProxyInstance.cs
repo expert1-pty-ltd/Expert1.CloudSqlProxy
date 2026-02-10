@@ -293,11 +293,7 @@ namespace Expert1.CloudSqlProxy
         private async Task<SslStream> SetupSecureConnectionAsync(NetworkStream networkStream)
         {
             X509Certificate2 cert = await certSource.GetValidClientCertificateAsync();
-            X509Certificate2Collection certCollection =
-            [
-                cert,
-                serverCaCert
-            ];
+            X509Certificate2Collection certCollection = [cert];
             SslStream sslStream = new(networkStream, false, new RemoteCertificateValidationCallback(ValidateServerCertificate));
             await sslStream.AuthenticateAsClientAsync(TargetHost, certCollection, SslProtocols.Tls13, checkCertificateRevocation: false);
             return sslStream;
