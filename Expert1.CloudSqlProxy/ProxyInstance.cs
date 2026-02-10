@@ -149,30 +149,47 @@ namespace Expert1.CloudSqlProxy
         /// <inheritdoc/>
         public void Dispose() => InstanceManager.RemoveInstance(this);
 
-        internal void Stop()
+        private async Task StopAsync(CancellationToken cancellationToken)
         {
+            // Signal all background work to stop
             cts.Cancel();
+
+            // Stop accepting new connections immediately
+            listener?.Stop();
+            listener = null;
+
+            // Await background tasks with cancellation
             try
             {
-                // Stop and clear the listener
-                listener?.Stop();
-                listener = null;
-
-                // Wait for the tasks to complete or handle the cancellation exception
-                listeningTask?.Wait();
+                if (listeningTask is not null)
+                    await listeningTask.WaitAsync(cancellationToken).ConfigureAwait(false);
             }
-            catch (AggregateException ex)
+            catch (OperationCanceledException)
             {
-                // Handle the case where the task was cancelled
-                ex.Handle(inner => inner is OperationCanceledException);
+                // Expected during shutdown or timeout
             }
             finally
             {
-                // Dispose of the CancellationTokenSource
-                cts.Dispose();
+                // Stop background refresh before disposing dependencies it may use
                 certSource?.StopBackgroundRefresh();
+
+                cts.Dispose();
                 sqlAdminService?.Dispose();
                 connectionPool?.Dispose();
+            }
+        }
+
+        internal void Stop()
+        {
+            using CancellationTokenSource timeoutCts = new(TimeSpan.FromSeconds(5));
+
+            try
+            {
+                StopAsync(timeoutCts.Token).GetAwaiter().GetResult();
+            }
+            catch (OperationCanceledException)
+            {
+                // timed out – optional log
             }
         }
 
