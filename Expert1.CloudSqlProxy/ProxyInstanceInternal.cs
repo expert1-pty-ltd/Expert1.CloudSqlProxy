@@ -53,8 +53,9 @@ namespace Expert1.CloudSqlProxy
         {
             (project, region, instanceId) = Utilities.SplitName(instance);
             GoogleCredential credential = authenticationMethod == AuthenticationMethod.CredentialFile
-                ? GoogleCredential.FromFile(credentials).CreateScoped(SQLAdminService.Scope.CloudPlatform)
-                : GoogleCredential.FromJson(credentials).CreateScoped(SQLAdminService.Scope.CloudPlatform);
+                ? CredentialFactory.FromFile<ServiceAccountCredential>(credentials).ToGoogleCredential()
+                : CredentialFactory.FromJson<ServiceAccountCredential>(credentials).ToGoogleCredential();
+            credential = credential.CreateScoped(SQLAdminService.Scope.CloudPlatform);
             sqlAdminService = new SQLAdminService(new BaseClientService.Initializer
             {
                 HttpClientInitializer = credential,
