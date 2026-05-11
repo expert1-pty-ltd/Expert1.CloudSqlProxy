@@ -6,6 +6,10 @@ namespace Expert1.CloudSqlProxy.Auth
     /// <summary>
     /// An <see cref="IAccessTokenSource"/> whose access token can be updated externally.
     /// </summary>
+    /// <remarks>
+    /// Updated tokens should belong to the same authentication identity as the
+    /// initial token.
+    /// </remarks>
     public sealed class SwappableTokenSource : IAccessTokenSource
     {
         private AccessToken _current;
@@ -16,7 +20,7 @@ namespace Expert1.CloudSqlProxy.Auth
         public SwappableTokenSource(AccessToken initial) => _current = initial;
 
         /// <summary>
-        /// Replaces the current access token.
+        /// Replaces the current access token for the same authentication identity.
         /// </summary>
         public void Update(AccessToken next) => Volatile.Write(ref _current, next);
 

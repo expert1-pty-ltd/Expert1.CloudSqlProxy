@@ -14,11 +14,13 @@ namespace Expert1.CloudSqlProxy
     /// </remarks>
     public sealed class ProxyInstance : IDisposable
     {
+        private readonly ProxyCacheKey cacheKey;
         private readonly ProxyInstanceInternal proxyInstance;
         private int disposeSignaled;
 
-        internal ProxyInstance(ProxyInstanceInternal proxyInstance)
+        internal ProxyInstance(ProxyCacheKey cacheKey, ProxyInstanceInternal proxyInstance)
         {
+            this.cacheKey = cacheKey ?? throw new ArgumentNullException(nameof(cacheKey));
             this.proxyInstance = proxyInstance ?? throw new ArgumentNullException(nameof(proxyInstance));
         }
 
@@ -56,7 +58,7 @@ namespace Expert1.CloudSqlProxy
         /// Start the proxy instance. This method will block until the proxy is connected.
         /// </summary>
         /// <param name="instance">Cloud SQL instance connection name.</param>
-        /// <param name="accessTokenSource">Source for Google Cloud access tokens.</param>
+        /// <param name="accessTokenSource">Source for Google Cloud access tokens. The source instance is used as the proxy reuse identity.</param>
         public static async Task<ProxyInstance> StartProxyAsync(
             string instance,
             IAccessTokenSource accessTokenSource)
@@ -115,7 +117,7 @@ namespace Expert1.CloudSqlProxy
         public void Dispose()
         {
             if (Interlocked.Exchange(ref disposeSignaled, 1) == 0)
-                InstanceManager.RemoveInstance(proxyInstance);
+                InstanceManager.RemoveInstance(cacheKey);
         }
     }
 }

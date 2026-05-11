@@ -9,20 +9,21 @@ namespace Expert1.CloudSqlProxy;
 
 /// <summary>
 /// Manages the lifecycle of shared proxy instances, ensuring that only one running
-/// proxy per unique database instance is active at a time.
+/// proxy per unique database instance and authentication identity is active at a time.
 /// </summary>
 internal static class InstanceManager
 {
-    private static readonly ConcurrentDictionary<string, ActiveInstancesEntry> activeInstances = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<ProxyCacheKey, ActiveInstancesEntry> activeInstances = new();
 
     public static Task<ProxyInstance> GetOrCreateInstanceAsync(
         AuthenticationMethod authenticationMethod,
         string instance,
         string credentials)
     {
+        ProxyCacheKey cacheKey = ProxyCacheKey.ForGoogleCredential(authenticationMethod, instance, credentials);
+
         return GetOrCreateInstanceCoreAsync(
-            key: instance,
-            authMode: (int)AuthMode.GoogleCredential,
+            cacheKey,
             createInstance: () => new ProxyInstanceInternal(authenticationMethod, instance, credentials));
     }
 
@@ -30,30 +31,20 @@ internal static class InstanceManager
         string instance,
         IAccessTokenSource accessTokenSource)
     {
+        ProxyCacheKey cacheKey = ProxyCacheKey.ForAccessTokenSource(instance, accessTokenSource);
+
         return GetOrCreateInstanceCoreAsync(
-            key: instance,
-            authMode: (int)AuthMode.AccessTokenSource,
+            cacheKey,
             createInstance: () => new ProxyInstanceInternal(instance, accessTokenSource));
     }
 
     private static async Task<ProxyInstance> GetOrCreateInstanceCoreAsync(
-        string key,
-        int authMode,
+        ProxyCacheKey cacheKey,
         Func<ProxyInstanceInternal> createInstance)
     {
-        key = Utilities.NormalizeInstanceName(key);
-        ActiveInstancesEntry entry = activeInstances.GetOrAdd(key, _ => new() { RefCount = 0 });
+        ActiveInstancesEntry entry = activeInstances.GetOrAdd(cacheKey, _ => new() { RefCount = 0 });
 
-        // Fail fast if someone tries to create the same instance with a different auth mode.
-        var existingMode = Volatile.Read(ref entry.AuthMode);
-        if (existingMode != (int)AuthMode.Unknown && existingMode != authMode)
-            throw new InvalidOperationException(
-                $"Proxy instance '{key}' is already active with a different authentication mode.");
-
-        // Ensure the mode is set (only needs to be set once)
-        Interlocked.CompareExchange(ref entry.AuthMode, authMode, (int)AuthMode.Unknown);
-
-        // Now that we know the mode is OK, increment refcount
+        // Each cache key already includes the authentication identity.
         Interlocked.Increment(ref entry.RefCount);
 
         if (Interlocked.CompareExchange(ref entry.CreateStarted, 1, 0) == 0)
@@ -71,7 +62,7 @@ internal static class InstanceManager
                 catch (Exception ex)
                 {
                     entry.ReadyTcs.TrySetException(ex);
-                    if (!activeInstances.TryRemove(key, out _))
+                    if (!activeInstances.TryRemove(cacheKey, out _))
                     {
                         // If the entry remained for any reason, allow retry.
                         Volatile.Write(ref entry.CreateStarted, 0);
@@ -93,19 +84,17 @@ internal static class InstanceManager
             // If we were the last "holder", try to remove the entry.
             // (Instance may never have started successfully.)
             if (newCount == 0)
-                activeInstances.TryRemove(key, out _);
+                activeInstances.TryRemove(cacheKey, out _);
 
             throw;
         }
 
-        return new ProxyInstance(entry.Instance!);
+        return new ProxyInstance(cacheKey, entry.Instance!);
     }
 
-    public static void RemoveInstance(ProxyInstanceInternal instance)
+    public static void RemoveInstance(ProxyCacheKey cacheKey)
     {
-        string key = instance.Instance;
-
-        if (!activeInstances.TryGetValue(key, out var entry))
+        if (!activeInstances.TryGetValue(cacheKey, out var entry))
             return;
 
         int newCount = Interlocked.Decrement(ref entry.RefCount);
@@ -113,20 +102,20 @@ internal static class InstanceManager
         if (newCount == 0)
         {
             // Ensure only one thread wins the right to stop/cleanup
-            if (activeInstances.TryRemove(key, out var removed))
+            if (activeInstances.TryRemove(cacheKey, out var removed))
             {
                 try { removed.Instance?.Stop(); } catch { }
             }
         }
         else if (newCount < 0)
         {
-            Debug.Fail($"Refcount for {key} dropped below zero");
+            Debug.Fail($"Refcount for {cacheKey.Instance} dropped below zero");
         }
     }
 
     public static void StopAllInstances()
     {
-        foreach (string key in activeInstances.Keys)
+        foreach (ProxyCacheKey key in activeInstances.Keys)
         {
             if (activeInstances.TryRemove(key, out ActiveInstancesEntry value))
             {
