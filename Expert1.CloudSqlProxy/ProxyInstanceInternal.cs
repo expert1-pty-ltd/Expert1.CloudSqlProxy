@@ -5,6 +5,7 @@ using Google.Apis.SQLAdmin.v1beta4;
 using Google.Apis.SQLAdmin.v1beta4.Data;
 using System;
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -39,6 +40,7 @@ namespace Expert1.CloudSqlProxy
         private readonly RemoteCertSource certSource;
         private X509Certificate2 serverCaCert;
         private BackendConnectionManager backendConnections;
+        private readonly ConcurrentDictionary<Task, byte> activeConnectionTasks = new();
 
         /// <summary>
         /// Google Cloud SQL Instance string.
@@ -102,6 +104,8 @@ namespace Expert1.CloudSqlProxy
             {
                 if (listeningTask is not null)
                     await listeningTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+                await WaitForActiveConnectionsAsync(cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -185,14 +189,48 @@ namespace Expert1.CloudSqlProxy
                 try
                 {
                     TcpClient client = await listener.AcceptTcpClientAsync(cancellationToken);
-                    _ = HandleClientAsync(client, cancellationToken); // Fire-and-forget
+                    TrackClientConnection(client, cancellationToken);
                 }
                 catch (OperationCanceledException)
                 {
                     // Listener was stopped, exit the loop
                     break;
                 }
+                catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (SocketException) when (cancellationToken.IsCancellationRequested)
+                {
+                    break;
+                }
             }
+        }
+
+        private void TrackClientConnection(TcpClient client, CancellationToken cancellationToken)
+        {
+            // Keep accepting clients while still giving shutdown a task to wait on.
+            Task connectionTask = HandleClientAsync(client, cancellationToken);
+            activeConnectionTasks.TryAdd(connectionTask, 0);
+            _ = connectionTask.ContinueWith(
+                static (task, state) =>
+                {
+                    var activeTasks = (ConcurrentDictionary<Task, byte>)state;
+                    activeTasks.TryRemove(task, out _);
+                },
+                activeConnectionTasks,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+
+        private async Task WaitForActiveConnectionsAsync(CancellationToken cancellationToken)
+        {
+            Task[] connectionTasks = activeConnectionTasks.Keys.ToArray();
+            if (connectionTasks.Length == 0)
+                return;
+
+            await Task.WhenAll(connectionTasks).WaitAsync(cancellationToken).ConfigureAwait(false);
         }
 
         private async Task HandleClientAsync(TcpClient client, CancellationToken globalCancellationToken)
@@ -206,33 +244,53 @@ namespace Expert1.CloudSqlProxy
                 using BackendConnectionManager.BackendConnectionLease serverConnection =
                     await backendConnections.RentConnectionAsync(cancellationToken);
 
-                try
-                {
-                    using NetworkStream clientStream = client.GetStream();
+                using NetworkStream clientStream = client.GetStream();
+                using NetworkStream serverStream = serverConnection.Client.GetStream();
+                using SslStream sslStream = await SetupSecureConnectionAsync(serverStream, cancellationToken);
 
-                    using NetworkStream serverStream = serverConnection.Client.GetStream();
-                    using SslStream sslStream = await SetupSecureConnectionAsync(serverStream, cancellationToken);
+                // Set up forwarding between client and server
+                Task clientToServerTask = ProxyTrafficAsync(clientStream, sslStream, cancellationToken);
+                Task serverToClientTask = ProxyTrafficAsync(sslStream, clientStream, cancellationToken);
 
-                    // Set up forwarding between client and server
-                    Task clientToServerTask = ProxyTrafficAsync(clientStream, sslStream, cancellationToken);
-                    Task serverToClientTask = ProxyTrafficAsync(sslStream, clientStream, cancellationToken);
+                await Task.WhenAny(clientToServerTask, serverToClientTask);
 
-                    await Task.WhenAny(clientToServerTask, serverToClientTask);
-
-                    // Ensure cancellation is requested for the other connection task
-                    connectionCts.Cancel();
-                    await Task.WhenAll(clientToServerTask, serverToClientTask);
-                }
-                finally
-                {
-                    client.Dispose();
-                }
+                // Ensure cancellation is requested for the other connection task
+                connectionCts.Cancel();
+                await Task.WhenAll(clientToServerTask, serverToClientTask);
             }
-            catch (OperationCanceledException)
+            catch (Exception ex) when (IsExpectedConnectionClose(ex, globalCancellationToken))
             {
-                // Handle expected cancellation gracefully
+                // The client or Cloud SQL proxy closed the tunnel as part of normal connection teardown.
+            }
+            finally
+            {
+                client.Dispose();
             }
         }
+
+        private static bool IsExpectedConnectionClose(Exception ex, CancellationToken cancellationToken)
+        {
+            if (ex is OperationCanceledException)
+                return true;
+
+            if (cancellationToken.IsCancellationRequested &&
+                (ex is ObjectDisposedException || ex is IOException || ex is SocketException))
+            {
+                return true;
+            }
+
+            if (ex is IOException { InnerException: SocketException socketException })
+                return IsExpectedSocketClose(socketException.SocketErrorCode);
+
+            return ex is SocketException directSocketException &&
+                IsExpectedSocketClose(directSocketException.SocketErrorCode);
+        }
+
+        private static bool IsExpectedSocketClose(SocketError socketError)
+            => socketError is SocketError.ConnectionAborted
+                or SocketError.ConnectionReset
+                or SocketError.OperationAborted
+                or SocketError.Shutdown;
 
         private static async Task ProxyTrafficAsync(Stream input, Stream output, CancellationToken cancellationToken)
         {
