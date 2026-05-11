@@ -170,8 +170,8 @@ namespace Expert1.CloudSqlProxy
             }
             finally
             {
-                // Stop background refresh before disposing dependencies it may use
-                certSource?.StopBackgroundRefresh();
+                // Dispose certificate resources before disposing dependencies they may use
+                certSource?.Dispose();
 
                 cts.Dispose();
                 sqlAdminService?.Dispose();
@@ -330,14 +330,25 @@ namespace Expert1.CloudSqlProxy
             CancellationToken cancellationToken)
         {
             X509Certificate2 cert = await certSource.GetValidClientCertificateAsync(cancellationToken);
-            X509Certificate2Collection certCollection = [cert];
+            // The client certificate is only needed during TLS authentication.
+            // Once authenticated, the SslStream uses negotiated session keys.
+            using X509Certificate2 clientCertificate = cert;
+            X509Certificate2Collection certCollection = [clientCertificate];
             SslStream sslStream = new(networkStream, false, new RemoteCertificateValidationCallback(ValidateServerCertificate));
-            await sslStream.AuthenticateAsClientAsync(
-                TargetHost,
-                certCollection,
-                SslProtocols.Tls13,
-                checkCertificateRevocation: false);
-            return sslStream;
+            try
+            {
+                await sslStream.AuthenticateAsClientAsync(
+                    TargetHost,
+                    certCollection,
+                    SslProtocols.Tls13,
+                    checkCertificateRevocation: false);
+                return sslStream;
+            }
+            catch
+            {
+                sslStream.Dispose();
+                throw;
+            }
         }
 
         private bool ValidateServerCertificate(object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors sslPolicyErrors)

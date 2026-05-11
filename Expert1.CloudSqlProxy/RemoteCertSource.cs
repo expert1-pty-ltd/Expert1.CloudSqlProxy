@@ -14,7 +14,7 @@ namespace Expert1.CloudSqlProxy
     /// secure connections to Google Cloud SQL instances. Handles RSA key generation,
     /// and fetching ephemeral certificates from the Cloud SQL Admin API.
     /// </summary>
-    internal sealed class RemoteCertSource
+    internal sealed class RemoteCertSource : IDisposable
     {
 #if NET9_0_OR_GREATER
         private readonly Lock keyLock = new();
@@ -25,6 +25,8 @@ namespace Expert1.CloudSqlProxy
         private readonly SQLAdminService service;
         private RSA privateKey;
         private X509Certificate2 clientCert;
+        private byte[] clientCertPkcs12;
+        private int disposed;
         private static readonly TimeSpan refreshWindow = TimeSpan.FromMinutes(15);
         private static readonly TimeSpan baseBackoff = TimeSpan.FromMilliseconds(200);
         private static readonly TimeSpan refershLoopTime = TimeSpan.FromMinutes(50);
@@ -74,22 +76,51 @@ namespace Expert1.CloudSqlProxy
             }
         }
 
-        public void StopBackgroundRefresh()
+        public void Dispose()
         {
-            refreshCts?.Cancel();
-            refreshTask?.Wait();
-            refreshCts?.Dispose();
+            if (Interlocked.Exchange(ref disposed, 1) != 0)
+                return;
+
+            refreshCts.Cancel();
+            try
+            {
+                refreshTask.Wait();
+            }
+            catch (AggregateException)
+            {
+                // Shutdown should release resources even if the background refresh faulted.
+            }
+
+            certLock.Wait();
+            try
+            {
+                clientCert?.Dispose();
+                ClearPfxData(clientCertPkcs12);
+                privateKey?.Dispose();
+                clientCert = null;
+                clientCertPkcs12 = null;
+                privateKey = null;
+            }
+            finally
+            {
+                certLock.Release();
+                certLock.Dispose();
+                refreshCts.Dispose();
+            }
         }
 
         public async Task<X509Certificate2> GetValidClientCertificateAsync(CancellationToken cancellationToken)
         {
+            ThrowIfDisposed();
             await certLock.WaitAsync(cancellationToken);
             try
             {
+                ThrowIfDisposed();
+
                 // X509Certificate2.NotAfter is in LocalTime so compare to DateTime.Now
                 if (clientCert != null && clientCert.NotAfter > DateTime.Now.Add(refreshWindow))
                 {
-                    return clientCert;
+                    return LoadPkcs12(clientCertPkcs12);
                 }
 
                 RSA key = GenerateKey();
@@ -101,19 +132,63 @@ namespace Expert1.CloudSqlProxy
                 ConnectResource.GenerateEphemeralCertRequest request = service.Connect.GenerateEphemeralCert(generateCertRequest, project, regionName);
                 GenerateEphemeralCertResponse response = await RetryWithBackoffAsync(() => request.ExecuteAsync(cancellationToken), cancellationToken: cancellationToken);
                 using X509Certificate2 certificate = X509Certificate2.CreateFromPem(response.EphemeralCert.Cert.AsSpan());
-                X509Certificate2 certWithKey = certificate.CopyWithPrivateKey(key);
-                byte[] pfxData = certWithKey.Export(X509ContentType.Pkcs12);
-#if NET9_0_OR_GREATER
-                clientCert = X509CertificateLoader.LoadPkcs12(pfxData, password: null);
-#else
-                clientCert = new X509Certificate2(pfxData);
-#endif
-                return clientCert;
+                using X509Certificate2 certWithKey = certificate.CopyWithPrivateKey(key);
+
+                byte[] newPfxData = certWithKey.Export(X509ContentType.Pkcs12);
+                X509Certificate2 newClientCert = null;
+                X509Certificate2 returnCert = null;
+                try
+                {
+                    newClientCert = LoadPkcs12(newPfxData);
+                    returnCert = LoadPkcs12(newPfxData);
+                    X509Certificate2 oldClientCert = clientCert;
+                    byte[] oldPfxData = clientCertPkcs12;
+
+                    clientCert = newClientCert;
+                    clientCertPkcs12 = newPfxData;
+                    newClientCert = null;
+                    newPfxData = null;
+
+                    oldClientCert?.Dispose();
+                    ClearPfxData(oldPfxData);
+
+                    return returnCert;
+                }
+                catch
+                {
+                    returnCert?.Dispose();
+                    newClientCert?.Dispose();
+                    ClearPfxData(newPfxData);
+                    throw;
+                }
             }
             finally
             {
                 certLock.Release();
             }
+        }
+
+        private void ThrowIfDisposed()
+        {
+            if (Volatile.Read(ref disposed) != 0)
+                throw new ObjectDisposedException(nameof(RemoteCertSource));
+        }
+
+        private static X509Certificate2 LoadPkcs12(byte[] pfxData)
+        {
+#if NET9_0_OR_GREATER
+            return X509CertificateLoader.LoadPkcs12(pfxData, password: null);
+#else
+            return new X509Certificate2(
+                pfxData,
+                (string)null);
+#endif
+        }
+
+        private static void ClearPfxData(byte[] pfxData)
+        {
+            if (pfxData != null)
+                CryptographicOperations.ZeroMemory(pfxData);
         }
 
         private static async Task<T> RetryWithBackoffAsync<T>(
