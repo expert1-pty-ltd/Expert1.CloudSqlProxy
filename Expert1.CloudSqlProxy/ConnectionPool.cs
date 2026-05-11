@@ -61,15 +61,33 @@ namespace Expert1.CloudSqlProxy
         {
             await _semaphore.WaitAsync(cancellationToken);
 
-            // Try to reuse an existing connection
-            if (_pool.TryTake(out TcpClient connection))
+            bool connectionReturned = false;
+            try
             {
-                if (IsConnectionValid(connection)) return connection;
-                connection.Dispose();
-            }
+                // Try to reuse an existing connection
+                if (_pool.TryTake(out TcpClient connection))
+                {
+                    if (IsConnectionValid(connection))
+                    {
+                        connectionReturned = true;
+                        return connection;
+                    }
 
-            // Create a new connection if none are available
-            return await CreateNewConnectionAsync(cancellationToken);
+                    connection.Dispose();
+                }
+
+                // Create a new connection if none are available
+                TcpClient newConnection = await CreateNewConnectionAsync(cancellationToken);
+                connectionReturned = true;
+                return newConnection;
+            }
+            finally
+            {
+                if (!connectionReturned)
+                {
+                    ReleaseSemaphore();
+                }
+            }
         }
 
         /// <summary>
@@ -109,8 +127,25 @@ namespace Expert1.CloudSqlProxy
         private async Task<TcpClient> CreateNewConnectionAsync(CancellationToken cancellationToken)
         {
             TcpClient client = new();
-            await client.ConnectAsync(_serverAddress, _serverPort, cancellationToken);
-            return client;
+            try
+            {
+                await client.ConnectAsync(_serverAddress, _serverPort, cancellationToken);
+                return client;
+            }
+            catch
+            {
+                client.Dispose();
+                throw;
+            }
+        }
+
+        private void ReleaseSemaphore()
+        {
+            lock (_disposeLock)
+            {
+                if (_disposed) return;
+                _semaphore.Release();
+            }
         }
 
         private static bool IsConnectionValid(TcpClient connection)
