@@ -85,23 +85,12 @@ namespace Expert1.CloudSqlProxy
 
             refreshCts.Cancel();
 
-            if (WaitForRefreshTask())
+            if (WaitForRefreshTask() && TryDisposeResources())
             {
-                DisposeResources();
                 return;
             }
 
-            _ = refreshTask.ContinueWith(
-                static (task, state) =>
-                {
-                    RemoteCertSource source = (RemoteCertSource)state;
-                    _ = task.Exception;
-                    source.DisposeResources();
-                },
-                this,
-                CancellationToken.None,
-                TaskContinuationOptions.None,
-                TaskScheduler.Default);
+            _ = DisposeResourcesWhenIdleAsync();
         }
 
         private bool WaitForRefreshTask()
@@ -116,12 +105,38 @@ namespace Expert1.CloudSqlProxy
             }
         }
 
-        private void DisposeResources()
+        private bool TryDisposeResources()
+        {
+            if (!certLock.Wait(0))
+                return false;
+
+            DisposeResourcesWithLockHeld();
+            return true;
+        }
+
+        private async Task DisposeResourcesWhenIdleAsync()
+        {
+            try
+            {
+                await refreshTask.ConfigureAwait(false);
+            }
+            catch
+            {
+                // Observe refresh failures; cleanup still needs to release cached certificate material.
+            }
+
+            await certLock.WaitAsync().ConfigureAwait(false);
+            DisposeResourcesWithLockHeld();
+        }
+
+        private void DisposeResourcesWithLockHeld()
         {
             if (Interlocked.Exchange(ref resourcesDisposed, 1) != 0)
+            {
+                certLock.Release();
                 return;
+            }
 
-            certLock.Wait();
             try
             {
                 clientCert?.Dispose();
