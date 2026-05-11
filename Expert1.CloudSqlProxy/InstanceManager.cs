@@ -8,9 +8,8 @@ using System.Threading.Tasks;
 namespace Expert1.CloudSqlProxy;
 
 /// <summary>
-/// Manages the lifecycle of ProxyInstance objects, ensuring that only one instance
-/// per unique database instance is active at a time. Handles creation, caching, and
-/// disposal of ProxyInstance objects.
+/// Manages the lifecycle of shared proxy instances, ensuring that only one running
+/// proxy per unique database instance is active at a time.
 /// </summary>
 internal static class InstanceManager
 {
@@ -24,7 +23,7 @@ internal static class InstanceManager
         return GetOrCreateInstanceCoreAsync(
             key: instance,
             authMode: (int)AuthMode.GoogleCredential,
-            createInstance: () => new ProxyInstance(authenticationMethod, instance, credentials));
+            createInstance: () => new ProxyInstanceInternal(authenticationMethod, instance, credentials));
     }
 
     public static Task<ProxyInstance> GetOrCreateInstanceAsync(
@@ -34,13 +33,13 @@ internal static class InstanceManager
         return GetOrCreateInstanceCoreAsync(
             key: instance,
             authMode: (int)AuthMode.AccessTokenSource,
-            createInstance: () => new ProxyInstance(instance, accessTokenSource));
+            createInstance: () => new ProxyInstanceInternal(instance, accessTokenSource));
     }
 
     private static async Task<ProxyInstance> GetOrCreateInstanceCoreAsync(
         string key,
         int authMode,
-        Func<ProxyInstance> createInstance)
+        Func<ProxyInstanceInternal> createInstance)
     {
         key = Utilities.NormalizeInstanceName(key);
         ActiveInstancesEntry entry = activeInstances.GetOrAdd(key, _ => new() { RefCount = 0 });
@@ -63,7 +62,7 @@ internal static class InstanceManager
             {
                 try
                 {
-                    ProxyInstance created = createInstance();
+                    ProxyInstanceInternal created = createInstance();
                     entry.Instance = created;
 
                     await created.StartAsync().ConfigureAwait(false);
@@ -99,10 +98,10 @@ internal static class InstanceManager
             throw;
         }
 
-        return entry.Instance!;
+        return new ProxyInstance(entry.Instance!);
     }
 
-    public static void RemoveInstance(ProxyInstance instance)
+    public static void RemoveInstance(ProxyInstanceInternal instance)
     {
         string key = instance.Instance;
 

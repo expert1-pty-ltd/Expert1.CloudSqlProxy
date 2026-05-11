@@ -10,7 +10,7 @@ namespace Expert1.CloudSqlProxy
         public readonly TaskCompletionSource<bool> ReadyTcs =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public ProxyInstance? Instance;
+        public ProxyInstanceInternal? Instance;
         public int AuthMode;
     }
 }
