@@ -15,12 +15,17 @@ namespace Expert1.CloudSqlProxy
     public sealed class ProxyInstance : IDisposable
     {
         private readonly ProxyCacheKey cacheKey;
+        private readonly ActiveInstancesEntry entry;
         private readonly ProxyInstanceInternal proxyInstance;
         private int disposeSignaled;
 
-        internal ProxyInstance(ProxyCacheKey cacheKey, ProxyInstanceInternal proxyInstance)
+        internal ProxyInstance(
+            ProxyCacheKey cacheKey,
+            ActiveInstancesEntry entry,
+            ProxyInstanceInternal proxyInstance)
         {
             this.cacheKey = cacheKey ?? throw new ArgumentNullException(nameof(cacheKey));
+            this.entry = entry ?? throw new ArgumentNullException(nameof(entry));
             this.proxyInstance = proxyInstance ?? throw new ArgumentNullException(nameof(proxyInstance));
         }
 
@@ -117,7 +122,7 @@ namespace Expert1.CloudSqlProxy
         public void Dispose()
         {
             if (Interlocked.Exchange(ref disposeSignaled, 1) == 0)
-                InstanceManager.RemoveInstance(cacheKey);
+                InstanceManager.RemoveInstance(cacheKey, entry);
         }
     }
 }

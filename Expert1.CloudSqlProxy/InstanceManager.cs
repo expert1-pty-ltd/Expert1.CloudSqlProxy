@@ -1,6 +1,6 @@
-﻿using Expert1.CloudSqlProxy.Auth;
+using Expert1.CloudSqlProxy.Auth;
 using System;
-using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
@@ -13,7 +13,12 @@ namespace Expert1.CloudSqlProxy;
 /// </summary>
 internal static class InstanceManager
 {
-    private static readonly ConcurrentDictionary<ProxyCacheKey, ActiveInstancesEntry> activeInstances = new();
+#if NET9_0_OR_GREATER
+    private static readonly Lock sync = new();
+#else
+    private static readonly object sync = new();
+#endif
+    private static readonly Dictionary<ProxyCacheKey, ActiveInstancesEntry> activeInstances = new();
 
     public static Task<ProxyInstance> GetOrCreateInstanceAsync(
         AuthenticationMethod authenticationMethod,
@@ -24,7 +29,9 @@ internal static class InstanceManager
 
         return GetOrCreateInstanceCoreAsync(
             cacheKey,
-            createInstance: () => new ProxyInstanceInternal(authenticationMethod, instance, credentials));
+            (cancellationToken) => StartInstanceAsync(
+                () => new ProxyInstanceInternal(authenticationMethod, instance, credentials),
+                cancellationToken));
     }
 
     public static Task<ProxyInstance> GetOrCreateInstanceAsync(
@@ -35,92 +42,180 @@ internal static class InstanceManager
 
         return GetOrCreateInstanceCoreAsync(
             cacheKey,
-            createInstance: () => new ProxyInstanceInternal(instance, accessTokenSource));
+            (cancellationToken) => StartInstanceAsync(
+                () => new ProxyInstanceInternal(instance, accessTokenSource),
+                cancellationToken));
     }
 
     private static async Task<ProxyInstance> GetOrCreateInstanceCoreAsync(
         ProxyCacheKey cacheKey,
-        Func<ProxyInstanceInternal> createInstance)
+        Func<CancellationToken, Task<ProxyInstanceInternal>> startInstance)
     {
-        ActiveInstancesEntry entry = activeInstances.GetOrAdd(cacheKey, _ => new() { RefCount = 0 });
+        ActiveInstancesEntry entry;
 
-        // Each cache key already includes the authentication identity.
-        Interlocked.Increment(ref entry.RefCount);
-
-        if (Interlocked.CompareExchange(ref entry.CreateStarted, 1, 0) == 0)
+        lock (sync)
         {
-            _ = Task.Run(async () =>
+            if (!activeInstances.TryGetValue(cacheKey, out entry))
             {
-                try
-                {
-                    ProxyInstanceInternal created = createInstance();
-                    entry.Instance = created;
+                entry = new ActiveInstancesEntry(startInstance);
+                activeInstances.Add(cacheKey, entry);
+            }
 
-                    await created.StartAsync().ConfigureAwait(false);
-                    entry.ReadyTcs.TrySetResult(true);
-                }
-                catch (Exception ex)
-                {
-                    entry.ReadyTcs.TrySetException(ex);
-                    if (!activeInstances.TryRemove(cacheKey, out _))
-                    {
-                        // If the entry remained for any reason, allow retry.
-                        Volatile.Write(ref entry.CreateStarted, 0);
-                    }
-                    try { entry.Instance?.Stop(); } catch { /* swallow */ }
-                }
-            });
+            entry.RefCount++;
         }
 
         try
         {
-            await entry.ReadyTcs.Task.ConfigureAwait(false);
+            ProxyInstanceInternal instance = await entry.InstanceTask.ConfigureAwait(false);
+
+            lock (sync)
+            {
+                if (IsCurrentEntry(cacheKey, entry))
+                    return new ProxyInstance(cacheKey, entry, instance);
+            }
+
+            throw new ObjectDisposedException(nameof(ProxyInstance));
         }
         catch
         {
-            // Undo the refcount increment for this caller.
-            int newCount = Interlocked.Decrement(ref entry.RefCount);
-
-            // If we were the last "holder", try to remove the entry.
-            // (Instance may never have started successfully.)
-            if (newCount == 0)
-                activeInstances.TryRemove(cacheKey, out _);
-
+            RemoveFailedEntry(cacheKey, entry);
+            ReleaseEntry(cacheKey, entry);
             throw;
         }
-
-        return new ProxyInstance(cacheKey, entry.Instance!);
     }
 
-    public static void RemoveInstance(ProxyCacheKey cacheKey)
+    private static async Task<ProxyInstanceInternal> StartInstanceAsync(
+        Func<ProxyInstanceInternal> createInstance,
+        CancellationToken cancellationToken)
     {
-        if (!activeInstances.TryGetValue(cacheKey, out var entry))
-            return;
+        ProxyInstanceInternal instance = null;
 
-        int newCount = Interlocked.Decrement(ref entry.RefCount);
-
-        if (newCount == 0)
+        try
         {
-            // Ensure only one thread wins the right to stop/cleanup
-            if (activeInstances.TryRemove(cacheKey, out var removed))
+            cancellationToken.ThrowIfCancellationRequested();
+
+            instance = createInstance();
+            await instance.StartAsync(cancellationToken).ConfigureAwait(false);
+
+            return instance;
+        }
+        catch
+        {
+            StopInstance(instance);
+            throw;
+        }
+    }
+
+    public static void RemoveInstance(ProxyCacheKey cacheKey, ActiveInstancesEntry entry)
+        => ReleaseEntry(cacheKey, entry);
+
+    private static void ReleaseEntry(ProxyCacheKey cacheKey, ActiveInstancesEntry entry)
+    {
+        Task<ProxyInstanceInternal> instanceTaskToStop = null;
+        bool refCountBelowZero = false;
+
+        lock (sync)
+        {
+            if (!IsCurrentEntry(cacheKey, entry))
+                return;
+
+            entry.RefCount--;
+
+            if (entry.RefCount == 0)
             {
-                try { removed.Instance?.Stop(); } catch { }
+                activeInstances.Remove(cacheKey);
+                entry.Cancel();
+                instanceTaskToStop = entry.InstanceTask;
+            }
+            else if (entry.RefCount < 0)
+            {
+                refCountBelowZero = true;
             }
         }
-        else if (newCount < 0)
-        {
+
+        if (refCountBelowZero)
             Debug.Fail($"Refcount for {cacheKey.Instance} dropped below zero");
+
+        StopWhenReady(instanceTaskToStop, entry);
+    }
+
+    private static void RemoveFailedEntry(ProxyCacheKey cacheKey, ActiveInstancesEntry entry)
+    {
+        if (!entry.InstanceTask.IsFaulted && !entry.InstanceTask.IsCanceled)
+            return;
+
+        bool removed = false;
+
+        lock (sync)
+        {
+            if (IsCurrentEntry(cacheKey, entry))
+            {
+                activeInstances.Remove(cacheKey);
+                removed = true;
+            }
         }
+
+        if (removed)
+            entry.Dispose();
+    }
+
+    private static bool IsCurrentEntry(ProxyCacheKey cacheKey, ActiveInstancesEntry entry)
+        => activeInstances.TryGetValue(cacheKey, out ActiveInstancesEntry current) &&
+            ReferenceEquals(current, entry);
+
+    private static void StopWhenReady(Task<ProxyInstanceInternal> instanceTask, ActiveInstancesEntry entry)
+    {
+        if (instanceTask is null)
+            return;
+
+        _ = StopWhenReadyAsync(instanceTask, entry);
+    }
+
+    private static async Task StopWhenReadyAsync(
+        Task<ProxyInstanceInternal> instanceTask,
+        ActiveInstancesEntry entry)
+    {
+        try
+        {
+            ProxyInstanceInternal instance = await instanceTask.ConfigureAwait(false);
+            StopInstance(instance);
+        }
+        catch
+        {
+        }
+        finally
+        {
+            entry.Dispose();
+        }
+    }
+
+    private static void StopInstance(ProxyInstanceInternal instance)
+    {
+        if (instance is null)
+            return;
+
+        try { instance.Stop(); } catch { }
     }
 
     public static void StopAllInstances()
     {
-        foreach (ProxyCacheKey key in activeInstances.Keys)
+        List<ActiveInstancesEntry> entriesToStop;
+
+        lock (sync)
         {
-            if (activeInstances.TryRemove(key, out ActiveInstancesEntry value))
+            entriesToStop = new List<ActiveInstancesEntry>(activeInstances.Values);
+            activeInstances.Clear();
+
+            foreach (ActiveInstancesEntry entry in entriesToStop)
             {
-                try { value.Instance?.Stop(); } catch { }
+                entry.RefCount = 0;
+                entry.Cancel();
             }
+        }
+
+        foreach (ActiveInstancesEntry entry in entriesToStop)
+        {
+            StopWhenReady(entry.InstanceTask, entry);
         }
     }
 }

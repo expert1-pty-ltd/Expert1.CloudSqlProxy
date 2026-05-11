@@ -138,11 +138,12 @@ namespace Expert1.CloudSqlProxy
             }
         }
 
-        internal async Task StartAsync()
+        internal async Task StartAsync(CancellationToken cancellationToken)
         {
-            cts = new CancellationTokenSource();
-            await SetupServerCertificateAsync();
-            await SetupBackendConnectionManager();
+            cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            await SetupServerCertificateAsync(cts.Token);
+            await SetupBackendConnectionManager(cts.Token);
+            cts.Token.ThrowIfCancellationRequested();
 
             listener = new TcpListener(IPAddress.Loopback, 0); // Listen on a random port
             listener.Start();
@@ -150,9 +151,9 @@ namespace Expert1.CloudSqlProxy
             listeningTask = ListenForConnectionsAsync(cts.Token);
         }
 
-        private async Task SetupBackendConnectionManager()
+        private async Task SetupBackendConnectionManager(CancellationToken cancellationToken)
         {
-            DatabaseInstance instanceDetails = await sqlAdminService.Instances.Get(project, instanceId).ExecuteAsync();
+            DatabaseInstance instanceDetails = await sqlAdminService.Instances.Get(project, instanceId).ExecuteAsync(cancellationToken);
 
             string serverIp =
                 instanceDetails.IpAddresses?
@@ -175,11 +176,11 @@ namespace Expert1.CloudSqlProxy
                 TimeSpan.FromMinutes(PREWARMED_CONNECTION_VALIDATION_INTERVAL_MIN));
         }
 
-        private async Task SetupServerCertificateAsync()
+        private async Task SetupServerCertificateAsync(CancellationToken cancellationToken)
         {
             if (serverCaCert == null)
             {
-                ConnectSettings connectSettings = await sqlAdminService.Connect.Get(project, instanceId).ExecuteAsync(cts.Token);
+                ConnectSettings connectSettings = await sqlAdminService.Connect.Get(project, instanceId).ExecuteAsync(cancellationToken);
                 serverCaCert = X509Certificate2.CreateFromPem(connectSettings.ServerCaCert.Cert.AsSpan());
             }
         }
