@@ -115,6 +115,8 @@ namespace Expert1.CloudSqlProxy
             {
                 // Dispose certificate resources before disposing dependencies they may use
                 certSource?.Dispose();
+                serverCaCert?.Dispose();
+                serverCaCert = null;
 
                 cts.Dispose();
                 sqlAdminService?.Dispose();
