@@ -49,7 +49,7 @@ namespace Expert1.CloudSqlProxy
             string credentials)
         {
             ProxyInstance proxyInstance = await InstanceManager.GetOrCreateInstanceAsync(authenticationMethod, instance, credentials).ConfigureAwait(false);
-            return await PrepareLeaseAsync(proxyInstance).ConfigureAwait(false);
+            return await PrewarmLeaseAsync(proxyInstance).ConfigureAwait(false);
         }
 
         /// <summary>
@@ -62,7 +62,7 @@ namespace Expert1.CloudSqlProxy
             IAccessTokenSource accessTokenSource)
         {
             ProxyInstance proxyInstance = await InstanceManager.GetOrCreateInstanceAsync(instance, accessTokenSource).ConfigureAwait(false);
-            return await PrepareLeaseAsync(proxyInstance).ConfigureAwait(false);
+            return await PrewarmLeaseAsync(proxyInstance).ConfigureAwait(false);
         }
 
         /// <summary>
@@ -89,14 +89,14 @@ namespace Expert1.CloudSqlProxy
             return StartProxyAsync(authenticationMethod, instance, credentials).GetAwaiter().GetResult();
         }
 
-        internal async Task PrepareConnectionAsync()
-            => await proxyInstance.PrepareConnectionAsync();
+        internal async Task PrewarmConnectionAsync()
+            => await proxyInstance.PrewarmConnectionAsync();
 
-        private static async Task<ProxyInstance> PrepareLeaseAsync(ProxyInstance proxyInstance)
+        private static async Task<ProxyInstance> PrewarmLeaseAsync(ProxyInstance proxyInstance)
         {
             try
             {
-                await proxyInstance.PrepareConnectionAsync().ConfigureAwait(false);
+                await proxyInstance.PrewarmConnectionAsync().ConfigureAwait(false);
                 return proxyInstance;
             }
             catch

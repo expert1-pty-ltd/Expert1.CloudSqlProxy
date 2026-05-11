@@ -27,7 +27,7 @@ namespace Expert1.CloudSqlProxy
     internal sealed class ProxyInstanceInternal
     {
         private const int MAX_POOL_SIZE = 100;
-        private const int CONNECTION_IDLE_TIMEOUT_MIN = 5;
+        private const int PREWARMED_CONNECTION_VALIDATION_INTERVAL_MIN = 5;
         private const int SQL_PORT = 3307;
         private readonly string project;
         private readonly string region;
@@ -38,7 +38,7 @@ namespace Expert1.CloudSqlProxy
         private Task listeningTask;
         private readonly RemoteCertSource certSource;
         private X509Certificate2 serverCaCert;
-        private ConnectionPool connectionPool;
+        private BackendConnectionManager backendConnections;
 
         /// <summary>
         /// Google Cloud SQL Instance string.
@@ -85,8 +85,8 @@ namespace Expert1.CloudSqlProxy
         /// </summary>
         public string DataSource => $"127.0.0.1,{Port}";
 
-        internal async Task PrepareConnectionAsync()
-            => await connectionPool.PrepareConnectionAsync(cts.Token);
+        internal async Task PrewarmConnectionAsync()
+            => await backendConnections.PrewarmConnectionAsync(cts.Token);
 
         private async Task StopAsync(CancellationToken cancellationToken)
         {
@@ -114,7 +114,7 @@ namespace Expert1.CloudSqlProxy
 
                 cts.Dispose();
                 sqlAdminService?.Dispose();
-                connectionPool?.Dispose();
+                backendConnections?.Dispose();
             }
         }
 
@@ -136,7 +136,7 @@ namespace Expert1.CloudSqlProxy
         {
             cts = new CancellationTokenSource();
             await SetupServerCertificateAsync();
-            await SetupConnectionPool();
+            await SetupBackendConnectionManager();
 
             listener = new TcpListener(IPAddress.Loopback, 0); // Listen on a random port
             listener.Start();
@@ -144,7 +144,7 @@ namespace Expert1.CloudSqlProxy
             listeningTask = ListenForConnectionsAsync(cts.Token);
         }
 
-        private async Task SetupConnectionPool()
+        private async Task SetupBackendConnectionManager()
         {
             DatabaseInstance instanceDetails = await sqlAdminService.Instances.Get(project, instanceId).ExecuteAsync();
 
@@ -162,11 +162,11 @@ namespace Expert1.CloudSqlProxy
             if (string.IsNullOrWhiteSpace(serverIp))
                 throw new InvalidOperationException("Cloud SQL instance has no usable IP addresses.");
 
-            connectionPool = new ConnectionPool(
+            backendConnections = new BackendConnectionManager(
                 serverIp,
                 SQL_PORT,
                 MAX_POOL_SIZE,
-                TimeSpan.FromMinutes(CONNECTION_IDLE_TIMEOUT_MIN));
+                TimeSpan.FromMinutes(PREWARMED_CONNECTION_VALIDATION_INTERVAL_MIN));
         }
 
         private async Task SetupServerCertificateAsync()
@@ -203,12 +203,14 @@ namespace Expert1.CloudSqlProxy
                 using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(globalCancellationToken);
                 CancellationToken cancellationToken = connectionCts.Token;
 
-                TcpClient serverConnection = await connectionPool.AcquireConnectionAsync(cancellationToken);
+                using BackendConnectionManager.BackendConnectionLease serverConnection =
+                    await backendConnections.RentConnectionAsync(cancellationToken);
+
                 try
                 {
                     using NetworkStream clientStream = client.GetStream();
 
-                    using NetworkStream serverStream = serverConnection.GetStream();
+                    using NetworkStream serverStream = serverConnection.Client.GetStream();
                     using SslStream sslStream = await SetupSecureConnectionAsync(serverStream, cancellationToken);
 
                     // Set up forwarding between client and server
@@ -223,7 +225,6 @@ namespace Expert1.CloudSqlProxy
                 }
                 finally
                 {
-                    connectionPool.ReleaseConnection(serverConnection);
                     client.Dispose();
                 }
             }
