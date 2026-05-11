@@ -23,7 +23,7 @@ public sealed class OidcWorkloadIdentityTokenSource : IAccessTokenSource, IDispo
 {
     private readonly Func<CancellationToken, ValueTask<string>> _getOidcIdToken;
     private readonly string _audience;
-    private readonly string? _serviceAccountEmail;
+    private readonly string _serviceAccountEmail;
     private readonly TimeSpan _refreshSkew;
 
     private readonly HttpClient _http;
@@ -31,6 +31,7 @@ public sealed class OidcWorkloadIdentityTokenSource : IAccessTokenSource, IDispo
 
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
     private AccessToken _current = new("", DateTimeOffset.MinValue);
+    private int _disposed;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="OidcWorkloadIdentityTokenSource"/> class.
@@ -54,9 +55,9 @@ public sealed class OidcWorkloadIdentityTokenSource : IAccessTokenSource, IDispo
     public OidcWorkloadIdentityTokenSource(
         Func<CancellationToken, ValueTask<string>> getOidcIdToken,
         string audience,
-        string? serviceAccountEmail = null,
+        string serviceAccountEmail = null,
         TimeSpan? refreshSkew = null,
-        HttpClient? httpClient = null)
+        HttpClient httpClient = null)
     {
         _getOidcIdToken = getOidcIdToken ?? throw new ArgumentNullException(nameof(getOidcIdToken));
         _audience = audience ?? throw new ArgumentNullException(nameof(audience));
@@ -72,6 +73,9 @@ public sealed class OidcWorkloadIdentityTokenSource : IAccessTokenSource, IDispo
     /// </summary>
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+
         _refreshGate.Dispose();
         if (_disposeHttp) _http.Dispose();
     }
@@ -114,18 +118,18 @@ public sealed class OidcWorkloadIdentityTokenSource : IAccessTokenSource, IDispo
 
     private async Task<AccessToken> RefreshAsync(CancellationToken ct)
     {
-        // 1) Get ODIC JWT
-        string OidcJwt = await _getOidcIdToken(ct).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(OidcJwt))
+        // 1) Get OIDC JWT
+        string oidcJwt = await _getOidcIdToken(ct).ConfigureAwait(false);
+        if (string.IsNullOrWhiteSpace(oidcJwt))
             throw new InvalidOperationException("OIDC token provider returned an empty token.");
 
         // 2) STS exchange
-        (string AccessToken, int ExpiresInSeconds) sts = await ExchangeWithStsAsync(OidcJwt, ct).ConfigureAwait(false);
+        (string AccessToken, int ExpiresInSeconds) sts = await ExchangeWithStsAsync(oidcJwt, ct).ConfigureAwait(false);
 
         // 3) Optional service account impersonation
         if (!string.IsNullOrEmpty(_serviceAccountEmail))
         {
-            (string AccessToken, DateTimeOffset ExpiresAt) sa = await ImpersonateServiceAccountAsync(sts.AccessToken, _serviceAccountEmail!, ct)
+            (string AccessToken, DateTimeOffset ExpiresAt) sa = await ImpersonateServiceAccountAsync(sts.AccessToken, _serviceAccountEmail, ct)
                 .ConfigureAwait(false);
 
             return new AccessToken(sa.AccessToken, sa.ExpiresAt);
