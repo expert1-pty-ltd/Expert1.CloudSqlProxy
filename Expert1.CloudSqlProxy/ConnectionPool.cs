@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
@@ -78,18 +79,23 @@ namespace Expert1.CloudSqlProxy
         /// <param name="connection">The <see cref="TcpClient"/> to release.</param>
         public void ReleaseConnection(TcpClient connection)
         {
-            if (IsConnectionValid(connection))
-            {
-                _pool.Add(connection);
-            }
-            else
-            {
-                connection.Dispose();
-            }
-
             lock (_disposeLock)
             {
-                if (_disposed) return;
+                if (_disposed)
+                {
+                    connection.Dispose();
+                    return;
+                }
+
+                if (IsConnectionValid(connection))
+                {
+                    _pool.Add(connection);
+                }
+                else
+                {
+                    connection.Dispose();
+                }
+
                 _semaphore.Release();
             }
         }
@@ -97,7 +103,7 @@ namespace Expert1.CloudSqlProxy
         public async Task PrepareConnectionAsync(CancellationToken cancellationToken)
         {
             TcpClient connection = await AcquireConnectionAsync(cancellationToken);
-            _pool.Add(connection);
+            ReleaseConnection(connection);
         }
 
         private async Task<TcpClient> CreateNewConnectionAsync(CancellationToken cancellationToken)
@@ -121,15 +127,35 @@ namespace Expert1.CloudSqlProxy
 
         private void CleanupIdleConnections(object state)
         {
-            while (_pool.TryTake(out TcpClient connection))
+            List<TcpClient> validConnections = [];
+            int connectionsToCheck = _pool.Count;
+
+            for (int i = 0; i < connectionsToCheck && _pool.TryTake(out TcpClient connection); i++)
             {
                 if (!IsConnectionValid(connection))
                 {
                     connection.Dispose();
+                    continue;
                 }
-                else
+
+                validConnections.Add(connection);
+            }
+
+            lock (_disposeLock)
+            {
+                if (_disposed)
                 {
-                    _pool.Add(connection); // Return it to the pool if still valid
+                    foreach (TcpClient connection in validConnections)
+                    {
+                        connection.Dispose();
+                    }
+
+                    return;
+                }
+
+                foreach (TcpClient connection in validConnections)
+                {
+                    _pool.Add(connection);
                 }
             }
         }
