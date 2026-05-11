@@ -27,9 +27,11 @@ namespace Expert1.CloudSqlProxy
         private X509Certificate2 clientCert;
         private byte[] clientCertPkcs12;
         private int disposed;
+        private int resourcesDisposed;
         private static readonly TimeSpan refreshWindow = TimeSpan.FromMinutes(15);
         private static readonly TimeSpan baseBackoff = TimeSpan.FromMilliseconds(200);
         private static readonly TimeSpan refershLoopTime = TimeSpan.FromMinutes(50);
+        private static readonly TimeSpan disposeRefreshWaitTimeout = TimeSpan.FromSeconds(1);
         private readonly CancellationTokenSource refreshCts;
         private readonly Task refreshTask;
         private readonly string project;
@@ -82,14 +84,42 @@ namespace Expert1.CloudSqlProxy
                 return;
 
             refreshCts.Cancel();
+
+            if (WaitForRefreshTask())
+            {
+                DisposeResources();
+                return;
+            }
+
+            _ = refreshTask.ContinueWith(
+                static (task, state) =>
+                {
+                    RemoteCertSource source = (RemoteCertSource)state;
+                    _ = task.Exception;
+                    source.DisposeResources();
+                },
+                this,
+                CancellationToken.None,
+                TaskContinuationOptions.None,
+                TaskScheduler.Default);
+        }
+
+        private bool WaitForRefreshTask()
+        {
             try
             {
-                refreshTask.Wait();
+                return refreshTask.Wait(disposeRefreshWaitTimeout);
             }
             catch (AggregateException)
             {
-                // Shutdown should release resources even if the background refresh faulted.
+                return true;
             }
+        }
+
+        private void DisposeResources()
+        {
+            if (Interlocked.Exchange(ref resourcesDisposed, 1) != 0)
+                return;
 
             certLock.Wait();
             try
