@@ -356,6 +356,9 @@ namespace Expert1.CloudSqlProxy
             if (certificate is not X509Certificate2 cert)
                 return false;
 
+            if (chain is null)
+                return false;
+
             // Enforce strict certificate pinning:
             // - Ignore all system/root CAs
             // - Trust ONLY the Cloud SQL server CA we fetched
