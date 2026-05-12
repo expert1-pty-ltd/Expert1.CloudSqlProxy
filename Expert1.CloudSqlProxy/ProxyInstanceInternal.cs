@@ -52,10 +52,7 @@ namespace Expert1.CloudSqlProxy
         internal ProxyInstanceInternal(AuthenticationMethod authenticationMethod, string instance, string credentials)
         {
             (project, region, instanceId) = Utilities.SplitName(instance);
-            GoogleCredential credential = authenticationMethod == AuthenticationMethod.CredentialFile
-                ? CredentialFactory.FromFile<ServiceAccountCredential>(credentials).ToGoogleCredential()
-                : CredentialFactory.FromJson<ServiceAccountCredential>(credentials).ToGoogleCredential();
-            credential = credential.CreateScoped(SQLAdminService.Scope.CloudPlatform);
+            GoogleCredential credential = Utilities.CreateGoogleCredential(authenticationMethod, credentials);
             sqlAdminService = new SQLAdminService(new BaseClientService.Initializer
             {
                 HttpClientInitializer = credential,

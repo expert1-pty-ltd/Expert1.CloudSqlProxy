@@ -1,4 +1,8 @@
 ﻿using System;
+using System.IO;
+using System.Text.Json;
+using Google.Apis.Auth.OAuth2;
+using Google.Apis.SQLAdmin.v1beta4;
 
 namespace Expert1.CloudSqlProxy
 {
@@ -76,6 +80,64 @@ namespace Expert1.CloudSqlProxy
 
             // canonical internal format
             return $"{project}:{region}:{instanceId}";
+        }
+
+        public static GoogleCredential CreateGoogleCredential(
+            AuthenticationMethod authenticationMethod,
+            string credentials)
+        {
+            if (credentials is null)
+                throw new ArgumentNullException(nameof(credentials));
+
+            string json = authenticationMethod == AuthenticationMethod.CredentialFile
+                ? File.ReadAllText(credentials)
+                : credentials;
+
+            using JsonDocument document = JsonDocument.Parse(json);
+            if (!document.RootElement.TryGetProperty("type", out JsonElement typeElement))
+                throw new InvalidOperationException("Google credential JSON does not contain a credential type.");
+
+            string type = typeElement.GetString();
+            GoogleCredential credential = type switch
+            {
+                string value when string.Equals(value, "service_account", StringComparison.OrdinalIgnoreCase) =>
+                    CredentialFactory.FromJson<ServiceAccountCredential>(json).ToGoogleCredential(),
+
+                string value when string.Equals(value, "authorized_user", StringComparison.OrdinalIgnoreCase) =>
+                    CredentialFactory.FromJson<UserCredential>(json).ToGoogleCredential(),
+
+                string value when string.Equals(value, "external_account_authorized_user", StringComparison.OrdinalIgnoreCase) =>
+                    CredentialFactory.FromJson<ExternalAccountAuthorizedUserCredential>(json).ToGoogleCredential(),
+
+                string value when string.Equals(value, "impersonated_service_account", StringComparison.OrdinalIgnoreCase) =>
+                    CredentialFactory.FromJson<ImpersonatedCredential>(json).ToGoogleCredential(),
+
+                string value when string.Equals(value, "external_account", StringComparison.OrdinalIgnoreCase) =>
+                    CreateExternalAccountCredential(json, document.RootElement),
+
+                _ => throw new InvalidOperationException($"Unsupported Google credential type '{type}'.")
+            };
+
+            return credential.CreateScoped(SQLAdminService.Scope.CloudPlatform);
+        }
+
+        private static GoogleCredential CreateExternalAccountCredential(
+            string json,
+            JsonElement rootElement)
+        {
+            if (!rootElement.TryGetProperty("credential_source", out JsonElement credentialSource))
+                throw new InvalidOperationException("External account credential JSON does not contain a credential_source.");
+
+            if (credentialSource.TryGetProperty("environment_id", out _))
+                return CredentialFactory.FromJson<AwsExternalAccountCredential>(json).ToGoogleCredential();
+
+            if (credentialSource.TryGetProperty("file", out _))
+                return CredentialFactory.FromJson<FileSourcedExternalAccountCredential>(json).ToGoogleCredential();
+
+            if (credentialSource.TryGetProperty("url", out _))
+                return CredentialFactory.FromJson<UrlSourcedExternalAccountCredential>(json).ToGoogleCredential();
+
+            throw new InvalidOperationException("Unsupported external account credential_source.");
         }
     }
 }
