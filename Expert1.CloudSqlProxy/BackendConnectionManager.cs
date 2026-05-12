@@ -13,6 +13,7 @@ namespace Expert1.CloudSqlProxy
     {
         private readonly Queue<TcpClient> readyConnections = new();
         private readonly SemaphoreSlim capacity;
+        private readonly SemaphoreSlim connectionAvailable;
         private readonly string serverAddress;
         private readonly int serverPort;
         private readonly Timer cleanupTimer;
@@ -35,6 +36,7 @@ namespace Expert1.CloudSqlProxy
             this.serverAddress = serverAddress;
             this.serverPort = serverPort;
             capacity = new SemaphoreSlim(maxConnections, maxConnections);
+            connectionAvailable = new SemaphoreSlim(0, maxConnections);
             cleanupTimer = new Timer(
                 CleanupInvalidReadyConnections,
                 null,
@@ -61,6 +63,7 @@ namespace Expert1.CloudSqlProxy
                     readyConnections.Enqueue(connection);
                     connection = null;
                     queued = true;
+                    SignalConnectionAvailableCore();
                 }
             }
             finally
@@ -78,11 +81,22 @@ namespace Expert1.CloudSqlProxy
             ThrowIfDisposed();
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (TryRentReadyConnection(out BackendConnectionLease readyLease))
-                return readyLease;
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
 
-            await capacity.WaitAsync(cancellationToken).ConfigureAwait(false);
+                if (TryRentReadyConnection(out BackendConnectionLease readyLease))
+                    return readyLease;
 
+                if (TryReserveCapacity())
+                    return await CreateLeasedConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                await WaitForConnectionAvailableAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        private async Task<BackendConnectionLease> CreateLeasedConnectionAsync(CancellationToken cancellationToken)
+        {
             TcpClient connection = null;
             bool leased = false;
             try
@@ -104,6 +118,17 @@ namespace Expert1.CloudSqlProxy
                     connection?.Dispose();
                     ReleaseCapacity();
                 }
+            }
+        }
+
+        private bool TryReserveCapacity()
+        {
+            lock (sync)
+            {
+                if (disposed)
+                    throw new ObjectDisposedException(nameof(BackendConnectionManager));
+
+                return capacity.Wait(0);
             }
         }
 
@@ -130,6 +155,18 @@ namespace Expert1.CloudSqlProxy
 
             lease = null;
             return false;
+        }
+
+        private async Task WaitForConnectionAvailableAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                await connectionAvailable.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (ObjectDisposedException)
+            {
+                throw new ObjectDisposedException(nameof(BackendConnectionManager));
+            }
         }
 
         private async Task<TcpClient> CreateNewConnectionAsync(CancellationToken cancellationToken)
@@ -159,6 +196,22 @@ namespace Expert1.CloudSqlProxy
         {
             if (disposed) return;
             capacity.Release();
+            SignalConnectionAvailableCore();
+        }
+
+        private void SignalConnectionAvailableCore()
+        {
+            if (disposed)
+                return;
+
+            try
+            {
+                connectionAvailable.Release();
+            }
+            catch (SemaphoreFullException)
+            {
+                // A bounded notification is already pending for each possible connection slot.
+            }
         }
 
         private void ThrowIfDisposed()
@@ -221,6 +274,7 @@ namespace Expert1.CloudSqlProxy
                 }
 
                 capacity.Dispose();
+                connectionAvailable.Dispose();
             }
         }
 
