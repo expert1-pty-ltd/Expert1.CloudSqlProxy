@@ -21,6 +21,11 @@ namespace Expert1.CloudSqlProxy.Auth;
 /// </remarks>
 public sealed class OidcWorkloadIdentityTokenSource : IAccessTokenSource, IDisposable
 {
+#if NET9_0_OR_GREATER
+    private readonly Lock _disposeSync = new();
+#else
+    private readonly object _disposeSync = new();
+#endif
     private readonly Func<CancellationToken, ValueTask<string>> _getOidcIdToken;
     private readonly string _audience;
     private readonly string _serviceAccountEmail;
@@ -31,7 +36,9 @@ public sealed class OidcWorkloadIdentityTokenSource : IAccessTokenSource, IDispo
 
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
     private AccessToken _current = new("", DateTimeOffset.MinValue);
+    private int _activeOperations;
     private int _disposed;
+    private int _resourcesDisposed;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="OidcWorkloadIdentityTokenSource"/> class.
@@ -76,8 +83,7 @@ public sealed class OidcWorkloadIdentityTokenSource : IAccessTokenSource, IDispo
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
             return;
 
-        _refreshGate.Dispose();
-        if (_disposeHttp) _http.Dispose();
+        DisposeResourcesIfIdle();
     }
 
     /// <summary>
@@ -95,25 +101,94 @@ public sealed class OidcWorkloadIdentityTokenSource : IAccessTokenSource, IDispo
     /// </returns>
     public async ValueTask<AccessToken> GetTokenAsync(CancellationToken cancellationToken)
     {
-        AccessToken cached = Volatile.Read(ref _current);
-        if (!cached.IsExpired(_refreshSkew))
-            return cached;
-
-        await _refreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        BeginOperation();
         try
         {
-            cached = Volatile.Read(ref _current);
+            AccessToken cached = Volatile.Read(ref _current);
             if (!cached.IsExpired(_refreshSkew))
                 return cached;
 
-            AccessToken refreshed = await RefreshAsync(cancellationToken).ConfigureAwait(false);
-            Volatile.Write(ref _current, refreshed);
-            return refreshed;
+            await _refreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                ThrowIfDisposed();
+
+                cached = Volatile.Read(ref _current);
+                if (!cached.IsExpired(_refreshSkew))
+                    return cached;
+
+                AccessToken refreshed = await RefreshAsync(cancellationToken).ConfigureAwait(false);
+                Volatile.Write(ref _current, refreshed);
+                return refreshed;
+            }
+            finally
+            {
+                _refreshGate.Release();
+            }
         }
         finally
         {
-            _refreshGate.Release();
+            EndOperation();
         }
+    }
+
+    private void BeginOperation()
+    {
+        lock (_disposeSync)
+        {
+            if (_disposed != 0)
+                throw new ObjectDisposedException(nameof(OidcWorkloadIdentityTokenSource));
+
+            _activeOperations++;
+        }
+    }
+
+    private void EndOperation()
+    {
+        bool disposeResources = false;
+
+        lock (_disposeSync)
+        {
+            _activeOperations--;
+            if (_disposed != 0 && _activeOperations == 0 && _resourcesDisposed == 0)
+            {
+                _resourcesDisposed = 1;
+                disposeResources = true;
+            }
+        }
+
+        if (disposeResources)
+            DisposeResources();
+    }
+
+    private void DisposeResourcesIfIdle()
+    {
+        bool disposeResources = false;
+
+        lock (_disposeSync)
+        {
+            if (_activeOperations == 0 && _resourcesDisposed == 0)
+            {
+                _resourcesDisposed = 1;
+                disposeResources = true;
+            }
+        }
+
+        if (disposeResources)
+            DisposeResources();
+    }
+
+    private void DisposeResources()
+    {
+        _refreshGate.Dispose();
+        if (_disposeHttp)
+            _http.Dispose();
+    }
+
+    private void ThrowIfDisposed()
+    {
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(OidcWorkloadIdentityTokenSource));
     }
 
     private async Task<AccessToken> RefreshAsync(CancellationToken ct)
