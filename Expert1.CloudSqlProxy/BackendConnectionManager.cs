@@ -76,23 +76,18 @@ namespace Expert1.CloudSqlProxy
             }
         }
 
-        public async Task<BackendConnectionLease> RentConnectionAsync(CancellationToken cancellationToken)
+        public ValueTask<BackendConnectionLease> RentConnectionAsync(CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
             cancellationToken.ThrowIfCancellationRequested();
 
-            while (true)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
+            if (TryRentReadyConnection(out BackendConnectionLease readyLease))
+                return new ValueTask<BackendConnectionLease>(readyLease);
 
-                if (TryRentReadyConnection(out BackendConnectionLease readyLease))
-                    return readyLease;
+            if (TryReserveCapacity())
+                return new ValueTask<BackendConnectionLease>(CreateLeasedConnectionAsync(cancellationToken));
 
-                if (TryReserveCapacity())
-                    return await CreateLeasedConnectionAsync(cancellationToken).ConfigureAwait(false);
-
-                await WaitForConnectionAvailableAsync(cancellationToken).ConfigureAwait(false);
-            }
+            return new ValueTask<BackendConnectionLease>(RentConnectionSlowAsync(cancellationToken));
         }
 
         private async Task<BackendConnectionLease> CreateLeasedConnectionAsync(CancellationToken cancellationToken)
@@ -118,6 +113,22 @@ namespace Expert1.CloudSqlProxy
                     connection?.Dispose();
                     ReleaseCapacity();
                 }
+            }
+        }
+
+        private async Task<BackendConnectionLease> RentConnectionSlowAsync(CancellationToken cancellationToken)
+        {
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                if (TryRentReadyConnection(out BackendConnectionLease readyLease))
+                    return readyLease;
+
+                if (TryReserveCapacity())
+                    return await CreateLeasedConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+                await WaitForConnectionAvailableAsync(cancellationToken).ConfigureAwait(false);
             }
         }
 

@@ -139,8 +139,9 @@ namespace Expert1.CloudSqlProxy
         internal async Task StartAsync(CancellationToken cancellationToken)
         {
             cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            await SetupServerCertificateAsync(cts.Token);
-            await SetupBackendConnectionManager(cts.Token);
+            Task serverCertificateTask = SetupServerCertificateAsync(cts.Token);
+            Task backendConnectionManagerTask = SetupBackendConnectionManager(cts.Token);
+            await Task.WhenAll(serverCertificateTask, backendConnectionManagerTask).ConfigureAwait(false);
             cts.Token.ThrowIfCancellationRequested();
 
             listener = new TcpListener(IPAddress.Loopback, 0); // Listen on a random port
@@ -320,7 +321,8 @@ namespace Expert1.CloudSqlProxy
             }
             finally
             {
-                ArrayPool<byte>.Shared.Return(buffer, true); // Optionally clear the buffer before returning it
+                // For security purposes, clear the buffer before returning it.
+                ArrayPool<byte>.Shared.Return(buffer, true); 
             }
         }
 
