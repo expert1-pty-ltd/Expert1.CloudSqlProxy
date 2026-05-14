@@ -66,8 +66,11 @@ public sealed class OidcWorkloadIdentityTokenSource : IAccessTokenSource, IDispo
         TimeSpan? refreshSkew = null,
         HttpClient httpClient = null)
     {
-        _getOidcIdToken = getOidcIdToken ?? throw new ArgumentNullException(nameof(getOidcIdToken));
-        _audience = audience ?? throw new ArgumentNullException(nameof(audience));
+        ArgumentNullException.ThrowIfNull(getOidcIdToken);
+        ArgumentNullException.ThrowIfNull(audience);
+
+        _getOidcIdToken = getOidcIdToken;
+        _audience = audience;
         _serviceAccountEmail = serviceAccountEmail;
         _refreshSkew = refreshSkew ?? TimeSpan.FromMinutes(5);
 
@@ -136,8 +139,7 @@ public sealed class OidcWorkloadIdentityTokenSource : IAccessTokenSource, IDispo
     {
         lock (_disposeSync)
         {
-            if (_disposed != 0)
-                throw new ObjectDisposedException(nameof(OidcWorkloadIdentityTokenSource));
+            ObjectDisposedException.ThrowIf(_disposed != 0, typeof(OidcWorkloadIdentityTokenSource));
 
             _activeOperations++;
         }
@@ -187,8 +189,7 @@ public sealed class OidcWorkloadIdentityTokenSource : IAccessTokenSource, IDispo
 
     private void ThrowIfDisposed()
     {
-        if (Volatile.Read(ref _disposed) != 0)
-            throw new ObjectDisposedException(nameof(OidcWorkloadIdentityTokenSource));
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, typeof(OidcWorkloadIdentityTokenSource));
     }
 
     private async Task<AccessToken> RefreshAsync(CancellationToken ct)

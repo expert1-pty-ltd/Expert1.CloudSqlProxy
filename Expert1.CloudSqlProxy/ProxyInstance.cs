@@ -24,9 +24,13 @@ namespace Expert1.CloudSqlProxy
             ActiveInstancesEntry entry,
             ProxyInstanceInternal proxyInstance)
         {
-            this.cacheKey = cacheKey ?? throw new ArgumentNullException(nameof(cacheKey));
-            this.entry = entry ?? throw new ArgumentNullException(nameof(entry));
-            this.proxyInstance = proxyInstance ?? throw new ArgumentNullException(nameof(proxyInstance));
+            ArgumentNullException.ThrowIfNull(cacheKey);
+            ArgumentNullException.ThrowIfNull(entry);
+            ArgumentNullException.ThrowIfNull(proxyInstance);
+
+            this.cacheKey = cacheKey;
+            this.entry = entry;
+            this.proxyInstance = proxyInstance;
         }
 
         /// <summary>

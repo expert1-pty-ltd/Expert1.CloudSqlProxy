@@ -86,8 +86,7 @@ namespace Expert1.CloudSqlProxy
             AuthenticationMethod authenticationMethod,
             string credentials)
         {
-            if (credentials is null)
-                throw new ArgumentNullException(nameof(credentials));
+            ArgumentNullException.ThrowIfNull(credentials);
 
             string json = authenticationMethod == AuthenticationMethod.CredentialFile
                 ? File.ReadAllText(credentials)

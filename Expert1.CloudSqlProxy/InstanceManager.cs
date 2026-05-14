@@ -70,11 +70,9 @@ internal static class InstanceManager
 
             lock (sync)
             {
-                if (IsCurrentEntry(cacheKey, entry))
-                    return new ProxyInstance(cacheKey, entry, instance);
+                ObjectDisposedException.ThrowIf(!IsCurrentEntry(cacheKey, entry), typeof(ProxyInstance));
+                return new ProxyInstance(cacheKey, entry, instance);
             }
-
-            throw new ObjectDisposedException(nameof(ProxyInstance));
         }
         catch
         {

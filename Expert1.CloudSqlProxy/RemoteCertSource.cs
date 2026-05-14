@@ -262,8 +262,7 @@ namespace Expert1.CloudSqlProxy
 
         private void ThrowIfDisposed()
         {
-            if (Volatile.Read(ref disposed) != 0)
-                throw new ObjectDisposedException(nameof(RemoteCertSource));
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, typeof(RemoteCertSource));
         }
 
         private static X509Certificate2 LoadPkcs12(byte[] pfxData)

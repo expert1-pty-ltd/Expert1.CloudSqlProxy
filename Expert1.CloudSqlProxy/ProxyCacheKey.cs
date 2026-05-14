@@ -46,8 +46,7 @@ internal sealed class ProxyCacheKey : IEquatable<ProxyCacheKey>
         string instance,
         string credentials)
     {
-        if (credentials is null)
-            throw new ArgumentNullException(nameof(credentials));
+        ArgumentNullException.ThrowIfNull(credentials);
 
         return new ProxyCacheKey(
             instance,
@@ -61,8 +60,7 @@ internal sealed class ProxyCacheKey : IEquatable<ProxyCacheKey>
         string instance,
         IAccessTokenSource accessTokenSource)
     {
-        if (accessTokenSource is null)
-            throw new ArgumentNullException(nameof(accessTokenSource));
+        ArgumentNullException.ThrowIfNull(accessTokenSource);
 
         return new ProxyCacheKey(
             instance,

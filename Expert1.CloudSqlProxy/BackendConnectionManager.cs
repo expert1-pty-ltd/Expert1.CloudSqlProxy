@@ -30,8 +30,7 @@ namespace Expert1.CloudSqlProxy
             int maxConnections,
             TimeSpan prewarmedConnectionValidationInterval)
         {
-            if (maxConnections <= 0)
-                throw new ArgumentOutOfRangeException(nameof(maxConnections));
+            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxConnections);
 
             this.serverAddress = serverAddress;
             this.serverPort = serverPort;
@@ -57,8 +56,7 @@ namespace Expert1.CloudSqlProxy
 
                 lock (sync)
                 {
-                    if (disposed)
-                        throw new ObjectDisposedException(nameof(BackendConnectionManager));
+                    ObjectDisposedException.ThrowIf(disposed, typeof(BackendConnectionManager));
 
                     readyConnections.Enqueue(connection);
                     connection = null;
@@ -99,8 +97,7 @@ namespace Expert1.CloudSqlProxy
                 connection = await CreateNewConnectionAsync(cancellationToken).ConfigureAwait(false);
                 lock (sync)
                 {
-                    if (disposed)
-                        throw new ObjectDisposedException(nameof(BackendConnectionManager));
+                    ObjectDisposedException.ThrowIf(disposed, typeof(BackendConnectionManager));
 
                     leased = true;
                     return new BackendConnectionLease(this, connection);
@@ -136,8 +133,7 @@ namespace Expert1.CloudSqlProxy
         {
             lock (sync)
             {
-                if (disposed)
-                    throw new ObjectDisposedException(nameof(BackendConnectionManager));
+                ObjectDisposedException.ThrowIf(disposed, typeof(BackendConnectionManager));
 
                 return capacity.Wait(0);
             }
@@ -147,8 +143,7 @@ namespace Expert1.CloudSqlProxy
         {
             lock (sync)
             {
-                if (disposed)
-                    throw new ObjectDisposedException(nameof(BackendConnectionManager));
+                ObjectDisposedException.ThrowIf(disposed, typeof(BackendConnectionManager));
 
                 while (readyConnections.Count > 0)
                 {
@@ -229,8 +224,7 @@ namespace Expert1.CloudSqlProxy
         {
             lock (sync)
             {
-                if (disposed)
-                    throw new ObjectDisposedException(nameof(BackendConnectionManager));
+                ObjectDisposedException.ThrowIf(disposed, typeof(BackendConnectionManager));
             }
         }
 
