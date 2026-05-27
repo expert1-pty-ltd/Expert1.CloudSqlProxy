@@ -2,7 +2,6 @@
 using System.IO;
 using System.Text.Json;
 using Google.Apis.Auth.OAuth2;
-using Google.Apis.SQLAdmin.v1beta4;
 
 namespace Expert1.CloudSqlProxy
 {
@@ -117,7 +116,7 @@ namespace Expert1.CloudSqlProxy
                 _ => throw new InvalidOperationException($"Unsupported Google credential type '{type}'.")
             };
 
-            return credential.CreateScoped(SQLAdminService.Scope.CloudPlatform);
+            return credential;
         }
 
         private static GoogleCredential CreateExternalAccountCredential(
