@@ -1,4 +1,5 @@
 using Expert1.CloudSqlProxy.Auth;
+using Google.Apis.Auth.OAuth2;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -44,6 +45,19 @@ internal static class InstanceManager
             cacheKey,
             (cancellationToken) => StartInstanceAsync(
                 () => new ProxyInstanceInternal(instance, accessTokenSource),
+                cancellationToken));
+    }
+
+    public static Task<ProxyInstance> GetOrCreateInstanceAsync(
+        string instance,
+        GoogleCredential credential)
+    {
+        ProxyCacheKey cacheKey = ProxyCacheKey.ForGoogleCredential(instance, credential);
+
+        return GetOrCreateInstanceCoreAsync(
+            cacheKey,
+            (cancellationToken) => StartInstanceAsync(
+                () => new ProxyInstanceInternal(instance, credential),
                 cancellationToken));
     }
 

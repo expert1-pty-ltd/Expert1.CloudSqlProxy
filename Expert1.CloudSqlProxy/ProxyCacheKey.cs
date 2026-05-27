@@ -1,4 +1,5 @@
 using Expert1.CloudSqlProxy.Auth;
+using Google.Apis.Auth.OAuth2;
 using System;
 using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
@@ -13,7 +14,7 @@ internal sealed class ProxyCacheKey : IEquatable<ProxyCacheKey>
     private readonly AuthMode authMode;
     private readonly AuthenticationMethod credentialAuthenticationMethod;
     private readonly string credentialFingerprint;
-    private readonly IAccessTokenSource accessTokenSource;
+    private readonly object identityReference;
     private readonly int hashCode;
 
     private ProxyCacheKey(
@@ -21,16 +22,16 @@ internal sealed class ProxyCacheKey : IEquatable<ProxyCacheKey>
         AuthMode authMode,
         AuthenticationMethod credentialAuthenticationMethod,
         string credentialFingerprint,
-        IAccessTokenSource accessTokenSource)
+        object identityReference)
     {
         Instance = Utilities.NormalizeInstanceName(instance);
         this.authMode = authMode;
         this.credentialAuthenticationMethod = credentialAuthenticationMethod;
         this.credentialFingerprint = credentialFingerprint;
-        this.accessTokenSource = accessTokenSource;
+        this.identityReference = identityReference;
 
-        int authIdentityHashCode = authMode == AuthMode.AccessTokenSource
-            ? RuntimeHelpers.GetHashCode(accessTokenSource)
+        int authIdentityHashCode = UsesReferenceIdentity(authMode)
+            ? RuntimeHelpers.GetHashCode(identityReference)
             : HashCode.Combine(credentialAuthenticationMethod, StringComparer.Ordinal.GetHashCode(credentialFingerprint));
 
         hashCode = HashCode.Combine(
@@ -53,7 +54,21 @@ internal sealed class ProxyCacheKey : IEquatable<ProxyCacheKey>
             AuthMode.GoogleCredential,
             authenticationMethod,
             CreateCredentialFingerprint(credentials),
-            accessTokenSource: null);
+            identityReference: null);
+    }
+
+    public static ProxyCacheKey ForGoogleCredential(
+        string instance,
+        GoogleCredential credential)
+    {
+        ArgumentNullException.ThrowIfNull(credential);
+
+        return new ProxyCacheKey(
+            instance,
+            AuthMode.SuppliedGoogleCredential,
+            credentialAuthenticationMethod: default,
+            credentialFingerprint: string.Empty,
+            identityReference: credential);
     }
 
     public static ProxyCacheKey ForAccessTokenSource(
@@ -67,7 +82,7 @@ internal sealed class ProxyCacheKey : IEquatable<ProxyCacheKey>
             AuthMode.AccessTokenSource,
             credentialAuthenticationMethod: default,
             credentialFingerprint: string.Empty,
-            accessTokenSource);
+            identityReference: accessTokenSource);
     }
 
     public bool Equals(ProxyCacheKey other)
@@ -82,8 +97,8 @@ internal sealed class ProxyCacheKey : IEquatable<ProxyCacheKey>
             return false;
         }
 
-        if (authMode == AuthMode.AccessTokenSource)
-            return ReferenceEquals(accessTokenSource, other.accessTokenSource);
+        if (UsesReferenceIdentity(authMode))
+            return ReferenceEquals(identityReference, other.identityReference);
 
         return credentialAuthenticationMethod == other.credentialAuthenticationMethod &&
             StringComparer.Ordinal.Equals(credentialFingerprint, other.credentialFingerprint);
@@ -99,4 +114,7 @@ internal sealed class ProxyCacheKey : IEquatable<ProxyCacheKey>
         byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(credentials));
         return Convert.ToHexString(hash);
     }
+
+    private static bool UsesReferenceIdentity(AuthMode authMode)
+        => authMode is AuthMode.AccessTokenSource or AuthMode.SuppliedGoogleCredential;
 }

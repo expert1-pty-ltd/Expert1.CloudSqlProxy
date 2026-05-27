@@ -1,4 +1,5 @@
 using Expert1.CloudSqlProxy.Auth;
+using Google.Apis.Auth.OAuth2;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
@@ -59,6 +60,9 @@ namespace Expert1.CloudSqlProxy
             string instance,
             string credentials)
         {
+            ArgumentNullException.ThrowIfNull(instance);
+            ArgumentNullException.ThrowIfNull(credentials);
+
             ProxyInstance proxyInstance = await InstanceManager.GetOrCreateInstanceAsync(authenticationMethod, instance, credentials).ConfigureAwait(false);
             return await PrewarmLeaseAsync(proxyInstance).ConfigureAwait(false);
         }
@@ -72,7 +76,27 @@ namespace Expert1.CloudSqlProxy
             string instance,
             IAccessTokenSource accessTokenSource)
         {
+            ArgumentNullException.ThrowIfNull(instance);
+            ArgumentNullException.ThrowIfNull(accessTokenSource);
+
             ProxyInstance proxyInstance = await InstanceManager.GetOrCreateInstanceAsync(instance, accessTokenSource).ConfigureAwait(false);
+            return await PrewarmLeaseAsync(proxyInstance).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Start the proxy instance. This method will block until the proxy is connected.
+        /// Reuse the same <see cref="GoogleCredential"/> instance to reuse the same shared proxy.
+        /// </summary>
+        /// <param name="instance">Cloud SQL instance connection name.</param>
+        /// <param name="credential">Google credential to use for Cloud SQL Admin API calls.</param>
+        public static async Task<ProxyInstance> StartProxyAsync(
+            string instance,
+            GoogleCredential credential)
+        {
+            ArgumentNullException.ThrowIfNull(instance);
+            ArgumentNullException.ThrowIfNull(credential);
+
+            ProxyInstance proxyInstance = await InstanceManager.GetOrCreateInstanceAsync(instance, credential).ConfigureAwait(false);
             return await PrewarmLeaseAsync(proxyInstance).ConfigureAwait(false);
         }
 
@@ -84,6 +108,19 @@ namespace Expert1.CloudSqlProxy
             IAccessTokenSource accessTokenSource)
         {
             return StartProxyAsync(instance, accessTokenSource).GetAwaiter().GetResult();
+        }
+
+        /// <summary>
+        /// Start the proxy instance. This method will block until the proxy is connected.
+        /// Reuse the same <see cref="GoogleCredential"/> instance to reuse the same shared proxy.
+        /// </summary>
+        /// <param name="instance">Cloud SQL instance connection name.</param>
+        /// <param name="credential">Google credential to use for Cloud SQL Admin API calls.</param>
+        public static ProxyInstance StartProxy(
+            string instance,
+            GoogleCredential credential)
+        {
+            return StartProxyAsync(instance, credential).GetAwaiter().GetResult();
         }
 
         /// <summary>

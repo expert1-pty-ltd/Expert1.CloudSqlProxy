@@ -3,5 +3,6 @@
 internal enum AuthMode
 {
     GoogleCredential = 1,
-    AccessTokenSource = 2
+    AccessTokenSource = 2,
+    SuppliedGoogleCredential = 3
 }

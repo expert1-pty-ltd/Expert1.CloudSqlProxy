@@ -1,5 +1,6 @@
 using Expert1.CloudSqlProxy.Auth;
 using Google.Apis.Auth.OAuth2;
+using Google.Apis.Http;
 using Google.Apis.Services;
 using Google.Apis.SQLAdmin.v1beta4;
 using Google.Apis.SQLAdmin.v1beta4.Data;
@@ -50,25 +51,29 @@ namespace Expert1.CloudSqlProxy
         private string TargetHost => $"{project}:{instanceId}";
 
         internal ProxyInstanceInternal(AuthenticationMethod authenticationMethod, string instance, string credentials)
+            : this(instance, Utilities.CreateGoogleCredential(authenticationMethod, credentials))
         {
-            (project, region, instanceId) = Utilities.SplitName(instance);
-            GoogleCredential credential = Utilities.CreateGoogleCredential(authenticationMethod, credentials);
-            sqlAdminService = new SQLAdminService(new BaseClientService.Initializer
-            {
-                HttpClientInitializer = credential,
-                ApplicationName = Utilities.UserAgent
-            });
+        }
 
-            certSource = new RemoteCertSource(sqlAdminService, instance);
+        internal ProxyInstanceInternal(string instance, GoogleCredential credential)
+            : this(instance, (IConfigurableHttpClientInitializer)CreateSqlAdminCredential(credential))
+        {
         }
 
         internal ProxyInstanceInternal(string instance, IAccessTokenSource accessTokenSource)
+            : this(instance, CreateAccessTokenInitializer(accessTokenSource))
         {
-            (project, region, instanceId) = Utilities.SplitName(instance);
+        }
 
+        private ProxyInstanceInternal(string instance, IConfigurableHttpClientInitializer httpClientInitializer)
+        {
+            ArgumentNullException.ThrowIfNull(instance);
+            ArgumentNullException.ThrowIfNull(httpClientInitializer);
+
+            (project, region, instanceId) = Utilities.SplitName(instance);
             sqlAdminService = new SQLAdminService(new BaseClientService.Initializer
             {
-                HttpClientInitializer = new AccessTokenHttpClientInitializer(accessTokenSource),
+                HttpClientInitializer = httpClientInitializer,
                 ApplicationName = Utilities.UserAgent
             });
 
@@ -380,6 +385,18 @@ namespace Expert1.CloudSqlProxy
             // - Succeeds ONLY if the server certificate chains to serverCaCert
             // - Fails if it chains to any system or public CA
             return chain.Build(cert);
+        }
+
+        private static GoogleCredential CreateSqlAdminCredential(GoogleCredential credential)
+        {
+            ArgumentNullException.ThrowIfNull(credential);
+            return credential.CreateScoped(SQLAdminService.Scope.CloudPlatform);
+        }
+
+        private static IConfigurableHttpClientInitializer CreateAccessTokenInitializer(IAccessTokenSource accessTokenSource)
+        {
+            ArgumentNullException.ThrowIfNull(accessTokenSource);
+            return new AccessTokenHttpClientInitializer(accessTokenSource);
         }
     }
 }
