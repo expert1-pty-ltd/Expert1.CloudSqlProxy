@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <RootNamespace>Expert1.CloudSqlProxy</RootNamespace>
-    <TargetFrameworks>Net8.0;Net9.0</TargetFrameworks>
+    <TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
     <PackageOutputPath>bin\Release\</PackageOutputPath>
     <Version>2.0.8</Version>
     <Company>Expert1 Pty Ltd</Company>
@@ -22,6 +22,7 @@
   <ItemGroup>
     <None Include="$(OutputPath)net8.0\$(AssemblyName).xml" Pack="true" PackagePath="lib/net8.0/" Condition="'$(TargetFramework)' == 'net8.0'" />
     <None Include="$(OutputPath)net9.0\$(AssemblyName).xml" Pack="true" PackagePath="lib/net9.0/" Condition="'$(TargetFramework)' == 'net9.0'" />
+    <None Include="$(OutputPath)net10.0\$(AssemblyName).xml" Pack="true" PackagePath="lib/net10.0/" Condition="'$(TargetFramework)' == 'net10.0'" />
   </ItemGroup>
   
   <ItemGroup>
@@ -35,6 +36,7 @@
     <PackageReference Include="Google.Apis.SQLAdmin.v1beta4" Version="1.72.*" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="[8.0.0,9.0.0)" Condition="'$(TargetFramework)' == 'net8.0'" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="[9.0.0,10.0.0)" Condition="'$(TargetFramework)' == 'net9.0'" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="[10.0.0,11.0.0)" Condition="'$(TargetFramework)' == 'net10.0'" />
   </ItemGroup>
 
   <Target Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' AND '$(TargetFramework)' != '' " Name="SignAssemblies" AfterTargets="Build">

@@ -11,7 +11,7 @@ This project provides a .NET library for creating and managing secure connection
 
 ## Prerequisites
 
-- .NET 8 or .NET 9
+- .NET 8, .NET 9, or .NET 10
 - Google Cloud SDK
 - Google Cloud SQL instance
 
