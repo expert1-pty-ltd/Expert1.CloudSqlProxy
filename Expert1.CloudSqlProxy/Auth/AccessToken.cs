@@ -10,6 +10,12 @@ public record AccessToken(
     DateTimeOffset ExpiresAt)
 {
     /// <summary>
+    /// Returns a string representation with the bearer token redacted.
+    /// </summary>
+    public override string ToString()
+        => $"AccessToken {{ Token = [REDACTED], ExpiresAt = {ExpiresAt:O} }}";
+
+    /// <summary>
     /// Determines whether the access token is expired or about to expire.
     /// </summary>
     /// <param name="skew">
