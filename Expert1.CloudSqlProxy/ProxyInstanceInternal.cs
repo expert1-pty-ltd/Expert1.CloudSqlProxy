@@ -40,6 +40,8 @@ namespace Expert1.CloudSqlProxy
         private Task listeningTask;
         private readonly RemoteCertSource certSource;
         private X509Certificate2 serverCaCert;
+        private string targetHost;
+        private bool requireHostnameValidation;
         private BackendConnectionManager backendConnections;
         private readonly ConcurrentDictionary<Task, byte> activeConnectionTasks = new();
 
@@ -47,8 +49,6 @@ namespace Expert1.CloudSqlProxy
         /// Google Cloud SQL Instance string.
         /// </summary>
         public string Instance => $"{project}:{region}:{instanceId}";
-
-        private string TargetHost => $"{project}:{instanceId}";
 
         internal ProxyInstanceInternal(AuthenticationMethod authenticationMethod, string instance, string credentials)
             : this(instance, Utilities.CreateGoogleCredential(authenticationMethod, credentials))
@@ -71,6 +71,7 @@ namespace Expert1.CloudSqlProxy
             ArgumentNullException.ThrowIfNull(httpClientInitializer);
 
             (project, region, instanceId) = Utilities.SplitName(instance);
+            targetHost = $"{project}:{instanceId}";
             sqlAdminService = new SQLAdminService(new BaseClientService.Initializer
             {
                 HttpClientInitializer = httpClientInitializer,
@@ -184,9 +185,56 @@ namespace Expert1.CloudSqlProxy
         {
             if (serverCaCert == null)
             {
-                ConnectSettings connectSettings = await sqlAdminService.Connect.Get(project, instanceId).ExecuteAsync(cancellationToken);
+                ConnectSettings connectSettings = await sqlAdminService.Connect
+                    .Get(project, instanceId)
+                    .ExecuteAsync(cancellationToken)
+                    .ConfigureAwait(false);
+
                 serverCaCert = X509Certificate2.CreateFromPem(connectSettings.ServerCaCert.Cert.AsSpan());
+                ConfigureServerIdentityValidation(connectSettings);
             }
+        }
+
+        private void ConfigureServerIdentityValidation(ConnectSettings connectSettings)
+        {
+            if (string.IsNullOrWhiteSpace(connectSettings.ServerCaMode) ||
+                string.Equals(
+                    connectSettings.ServerCaMode,
+                    "GOOGLE_MANAGED_INTERNAL_CA",
+                    StringComparison.Ordinal))
+            {
+                // The per-instance CA is unique to this Cloud SQL instance, so validating
+                // the certificate chain against that CA also establishes server identity.
+                targetHost = $"{project}:{instanceId}";
+                requireHostnameValidation = false;
+                return;
+            }
+
+            if (string.Equals(
+                    connectSettings.ServerCaMode,
+                    "GOOGLE_MANAGED_CAS_CA",
+                    StringComparison.Ordinal) ||
+                string.Equals(
+                    connectSettings.ServerCaMode,
+                    "CUSTOMER_MANAGED_CAS_CA",
+                    StringComparison.Ordinal))
+            {
+                if (string.IsNullOrWhiteSpace(connectSettings.DnsName))
+                {
+                    throw new InvalidOperationException(
+                        $"Cloud SQL did not provide a DNS name for server identity validation " +
+                        $"with CA mode '{connectSettings.ServerCaMode}'.");
+                }
+
+                // Shared and customer-managed CAs can sign certificates for more than one
+                // server, so the API-provided DNS name must also match the certificate SAN.
+                targetHost = connectSettings.DnsName;
+                requireHostnameValidation = true;
+                return;
+            }
+
+            throw new InvalidOperationException(
+                $"Unsupported Cloud SQL server CA mode '{connectSettings.ServerCaMode}'.");
         }
 
         private async Task ListenForConnectionsAsync(CancellationToken cancellationToken)
@@ -335,19 +383,44 @@ namespace Expert1.CloudSqlProxy
             NetworkStream networkStream,
             CancellationToken cancellationToken)
         {
-            X509Certificate2 cert = await certSource.GetValidClientCertificateAsync(cancellationToken);
+            X509Certificate2 cert = await certSource
+                .GetValidClientCertificateAsync(cancellationToken)
+                .ConfigureAwait(false);
+
             // The client certificate is only needed during TLS authentication.
             // Once authenticated, the SslStream uses negotiated session keys.
             using X509Certificate2 clientCertificate = cert;
             X509Certificate2Collection certCollection = [clientCertificate];
-            SslStream sslStream = new(networkStream, false, new RemoteCertificateValidationCallback(ValidateServerCertificate));
+
+            X509ChainPolicy chainPolicy = new()
+            {
+                TrustMode = X509ChainTrustMode.CustomRootTrust,
+                RevocationMode = X509RevocationMode.NoCheck,
+                VerificationFlags = X509VerificationFlags.NoFlag
+            };
+            chainPolicy.CustomTrustStore.Add(serverCaCert);
+
+            SslClientAuthenticationOptions authenticationOptions = new()
+            {
+                TargetHost = targetHost,
+                ClientCertificates = certCollection,
+                EnabledSslProtocols = SslProtocols.Tls13,
+                CertificateChainPolicy = chainPolicy
+            };
+
+            if (!requireHostnameValidation)
+            {
+                authenticationOptions.RemoteCertificateValidationCallback =
+                    ValidatePerInstanceServerCertificate;
+            }
+
+            SslStream sslStream = new(networkStream, leaveInnerStreamOpen: false);
             try
             {
-                await sslStream.AuthenticateAsClientAsync(
-                    TargetHost,
-                    certCollection,
-                    SslProtocols.Tls13,
-                    checkCertificateRevocation: false);
+                await sslStream
+                    .AuthenticateAsClientAsync(authenticationOptions, cancellationToken)
+                    .ConfigureAwait(false);
+
                 return sslStream;
             }
             catch
@@ -357,34 +430,19 @@ namespace Expert1.CloudSqlProxy
             }
         }
 
-        private bool ValidateServerCertificate(object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors sslPolicyErrors)
+        private static bool ValidatePerInstanceServerCertificate(
+            object sender,
+            X509Certificate certificate,
+            X509Chain chain,
+            SslPolicyErrors sslPolicyErrors)
         {
-            // We require X509Certificate2 for proper chain validation
-            if (certificate is not X509Certificate2 cert)
-                return false;
-
-            if (chain is null)
-                return false;
-
-            // Enforce strict certificate pinning:
-            // - Ignore all system/root CAs
-            // - Trust ONLY the Cloud SQL server CA we fetched
-            chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
-
-            // Ensure no accidental roots linger
-            chain.ChainPolicy.CustomTrustStore.Clear();
-            chain.ChainPolicy.CustomTrustStore.Add(serverCaCert);
-
-            // Cloud SQL certs do not require revocation checking here
-            chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
-
-            // Perform a full verification with no relaxations
-            chain.ChainPolicy.VerificationFlags = X509VerificationFlags.NoFlag;
-
-            // Build the chain:
-            // - Succeeds ONLY if the server certificate chains to serverCaCert
-            // - Fails if it chains to any system or public CA
-            return chain.Build(cert);
+            // Per-instance Cloud SQL certificates do not consistently expose a hostname
+            // suitable for validation. The custom chain policy still requires the unique
+            // instance CA; only a name mismatch may be ignored for this CA mode.
+            return certificate is not null &&
+                chain is not null &&
+                (sslPolicyErrors & ~SslPolicyErrors.RemoteCertificateNameMismatch) ==
+                    SslPolicyErrors.None;
         }
 
         private static GoogleCredential CreateSqlAdminCredential(GoogleCredential credential)
