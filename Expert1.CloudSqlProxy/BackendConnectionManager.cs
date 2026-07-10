@@ -17,6 +17,9 @@ namespace Expert1.CloudSqlProxy
         private readonly string serverAddress;
         private readonly int serverPort;
         private readonly Timer cleanupTimer;
+        // Protected by sync. Concurrent readiness checks share this task so they
+        // ensure one warm connection instead of reserving one socket per proxy lease.
+        private Task prewarmTask;
         private bool disposed;
 #if NET9_0_OR_GREATER
         private readonly Lock sync = new();
@@ -43,9 +46,26 @@ namespace Expert1.CloudSqlProxy
                 prewarmedConnectionValidationInterval);
         }
 
-        public async Task PrewarmConnectionAsync(CancellationToken cancellationToken)
+        public Task EnsurePrewarmedConnectionAsync(CancellationToken cancellationToken)
         {
-            ThrowIfDisposed();
+            cancellationToken.ThrowIfCancellationRequested();
+
+            lock (sync)
+            {
+                ObjectDisposedException.ThrowIf(disposed, typeof(BackendConnectionManager));
+
+                if (HasValidReadyConnectionCore())
+                    return Task.CompletedTask;
+
+                if (prewarmTask is null || prewarmTask.IsCompleted)
+                    prewarmTask = CreatePrewarmedConnectionAsync(cancellationToken);
+
+                return prewarmTask;
+            }
+        }
+
+        private async Task CreatePrewarmedConnectionAsync(CancellationToken cancellationToken)
+        {
             await capacity.WaitAsync(cancellationToken).ConfigureAwait(false);
 
             TcpClient connection = null;
@@ -72,6 +92,22 @@ namespace Expert1.CloudSqlProxy
                     ReleaseCapacity();
                 }
             }
+        }
+
+        private bool HasValidReadyConnectionCore()
+        {
+            while (readyConnections.Count > 0)
+            {
+                TcpClient readyConnection = readyConnections.Peek();
+                if (IsConnectionValid(readyConnection))
+                    return true;
+
+                readyConnections.Dequeue();
+                readyConnection.Dispose();
+                ReleaseCapacityCore();
+            }
+
+            return false;
         }
 
         public ValueTask<BackendConnectionLease> RentConnectionAsync(CancellationToken cancellationToken)

@@ -91,8 +91,8 @@ namespace Expert1.CloudSqlProxy
         /// </summary>
         public string DataSource => $"127.0.0.1,{Port}";
 
-        internal async Task PrewarmConnectionAsync()
-            => await backendConnections.PrewarmConnectionAsync(cts.Token);
+        internal Task PrewarmConnectionAsync()
+            => backendConnections.EnsurePrewarmedConnectionAsync(cts.Token);
 
         private async Task StopAsync(CancellationToken cancellationToken)
         {

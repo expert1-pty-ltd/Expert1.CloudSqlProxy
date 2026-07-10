@@ -137,8 +137,8 @@ namespace Expert1.CloudSqlProxy
             return StartProxyAsync(authenticationMethod, instance, credentials).GetAwaiter().GetResult();
         }
 
-        internal async Task PrewarmConnectionAsync()
-            => await proxyInstance.PrewarmConnectionAsync();
+        internal Task PrewarmConnectionAsync()
+            => proxyInstance.PrewarmConnectionAsync();
 
         private static async Task<ProxyInstance> PrewarmLeaseAsync(ProxyInstance proxyInstance)
         {
