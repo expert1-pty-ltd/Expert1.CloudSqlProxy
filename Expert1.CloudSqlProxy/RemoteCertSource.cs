@@ -267,12 +267,22 @@ namespace Expert1.CloudSqlProxy
 
         private static X509Certificate2 LoadPkcs12(byte[] pfxData)
         {
+            // Intentionally do not use EphemeralKeySet. Windows Schannel cannot reliably
+            // use ephemeral private keys for SslStream client authentication.
+            // DefaultKeySet may use temporary store-backed key material, but because
+            // PersistKeySet is not specified, disposing the certificate removes the key.
+            // Callers must therefore dispose every returned certificate.
+            // See: https://github.com/dotnet/runtime/issues/23749
 #if NET9_0_OR_GREATER
-            return X509CertificateLoader.LoadPkcs12(pfxData, password: null);
+            return X509CertificateLoader.LoadPkcs12(
+                pfxData,
+                password: null,
+                keyStorageFlags: X509KeyStorageFlags.DefaultKeySet);
 #else
             return new X509Certificate2(
                 pfxData,
-                (string)null);
+                (string)null,
+                X509KeyStorageFlags.DefaultKeySet);
 #endif
         }
 
