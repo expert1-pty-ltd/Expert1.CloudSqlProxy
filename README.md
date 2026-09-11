@@ -142,6 +142,8 @@ connection.Open();
 
 Calls to `StartProxyAsync` may share a running proxy for the same Cloud SQL instance and authentication identity. Each call returns its own disposable `ProxyInstance` lease. Dispose each returned instance when the caller no longer needs the proxy.
 
+For credential-file authentication, each call reads a snapshot of the file's current contents. Calls with different contents use separate shared proxies; existing leases continue using their original credentials until disposed.
+
 ```csharp
 using ProxyInstance proxyInstance = await ProxyInstance.StartProxyAsync(
     AuthenticationMethod.CredentialFile,

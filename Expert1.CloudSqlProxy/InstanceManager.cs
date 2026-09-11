@@ -3,6 +3,7 @@ using Google.Apis.Auth.OAuth2;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -21,18 +22,25 @@ internal static class InstanceManager
 #endif
     private static readonly Dictionary<ProxyCacheKey, ActiveInstancesEntry> activeInstances = new();
 
-    public static Task<ProxyInstance> GetOrCreateInstanceAsync(
+    public static async Task<ProxyInstance> GetOrCreateInstanceAsync(
         AuthenticationMethod authenticationMethod,
         string instance,
         string credentials)
     {
-        ProxyCacheKey cacheKey = ProxyCacheKey.ForGoogleCredential(authenticationMethod, instance, credentials);
+        ArgumentNullException.ThrowIfNull(credentials);
 
-        return GetOrCreateInstanceCoreAsync(
+        // Use the same snapshot for cache identity and authentication, even if the
+        // credential file is replaced before the background startup task runs.
+        string credentialJson = authenticationMethod == AuthenticationMethod.CredentialFile
+            ? await File.ReadAllTextAsync(credentials).ConfigureAwait(false)
+            : credentials;
+        ProxyCacheKey cacheKey = ProxyCacheKey.ForGoogleCredential(authenticationMethod, instance, credentialJson);
+
+        return await GetOrCreateInstanceCoreAsync(
             cacheKey,
             (cancellationToken) => StartInstanceAsync(
-                () => new ProxyInstanceInternal(authenticationMethod, instance, credentials),
-                cancellationToken));
+                () => new ProxyInstanceInternal(AuthenticationMethod.JSON, instance, credentialJson),
+                cancellationToken)).ConfigureAwait(false);
     }
 
     public static Task<ProxyInstance> GetOrCreateInstanceAsync(

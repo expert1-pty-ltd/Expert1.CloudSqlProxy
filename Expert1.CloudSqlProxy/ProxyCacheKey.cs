@@ -45,15 +45,15 @@ internal sealed class ProxyCacheKey : IEquatable<ProxyCacheKey>
     public static ProxyCacheKey ForGoogleCredential(
         AuthenticationMethod authenticationMethod,
         string instance,
-        string credentials)
+        string credentialJson)
     {
-        ArgumentNullException.ThrowIfNull(credentials);
+        ArgumentNullException.ThrowIfNull(credentialJson);
 
         return new ProxyCacheKey(
             instance,
             AuthMode.GoogleCredential,
             authenticationMethod,
-            CreateCredentialFingerprint(credentials),
+            CreateCredentialFingerprint(credentialJson),
             identityReference: null);
     }
 
