@@ -111,17 +111,36 @@ namespace Expert1.CloudSqlProxy
         }
 
         public ValueTask<BackendConnectionLease> RentConnectionAsync(CancellationToken cancellationToken)
+            => RentConnectionCoreAsync(cancellationToken, waitForCapacity: true);
+
+        // Returns null when all slots are occupied, without queueing a caller.
+        public ValueTask<BackendConnectionLease> TryRentConnectionAsync(CancellationToken cancellationToken)
+            => RentConnectionCoreAsync(cancellationToken, waitForCapacity: false);
+
+        private ValueTask<BackendConnectionLease> RentConnectionCoreAsync(
+            CancellationToken cancellationToken,
+            bool waitForCapacity)
         {
-            ThrowIfDisposed();
-            cancellationToken.ThrowIfCancellationRequested();
+            bool reserved;
+            lock (sync)
+            {
+                ObjectDisposedException.ThrowIf(disposed, typeof(BackendConnectionManager));
+                cancellationToken.ThrowIfCancellationRequested();
 
-            if (TryRentReadyConnection(out BackendConnectionLease readyLease))
-                return new ValueTask<BackendConnectionLease>(readyLease);
+                // Check ready sockets and capacity together so a concurrent prewarm
+                // cannot make a usable socket appear unavailable between the checks.
+                if (TryRentReadyConnection(out BackendConnectionLease readyLease))
+                    return new ValueTask<BackendConnectionLease>(readyLease);
 
-            if (TryReserveCapacity())
+                reserved = capacity.Wait(0);
+            }
+
+            if (reserved)
                 return new ValueTask<BackendConnectionLease>(CreateLeasedConnectionAsync(cancellationToken));
 
-            return new ValueTask<BackendConnectionLease>(RentConnectionSlowAsync(cancellationToken));
+            return waitForCapacity
+                ? new ValueTask<BackendConnectionLease>(RentConnectionSlowAsync(cancellationToken))
+                : new ValueTask<BackendConnectionLease>((BackendConnectionLease)null);
         }
 
         private async Task<BackendConnectionLease> CreateLeasedConnectionAsync(CancellationToken cancellationToken)
@@ -253,14 +272,6 @@ namespace Expert1.CloudSqlProxy
             catch (SemaphoreFullException)
             {
                 // A bounded notification is already pending for each possible connection slot.
-            }
-        }
-
-        private void ThrowIfDisposed()
-        {
-            lock (sync)
-            {
-                ObjectDisposedException.ThrowIf(disposed, typeof(BackendConnectionManager));
             }
         }
 

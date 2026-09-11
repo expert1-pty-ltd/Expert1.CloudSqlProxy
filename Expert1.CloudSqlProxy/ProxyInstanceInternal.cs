@@ -297,7 +297,12 @@ namespace Expert1.CloudSqlProxy
                 CancellationToken cancellationToken = connectionCts.Token;
 
                 using BackendConnectionManager.BackendConnectionLease serverConnection =
-                    await backendConnections.RentConnectionAsync(cancellationToken);
+                    await backendConnections.TryRentConnectionAsync(cancellationToken);
+
+                // A queued client can disconnect before we ever read its socket.
+                // Reject excess connections instead of retaining unbounded waiters.
+                if (serverConnection is null)
+                    return;
 
                 using NetworkStream clientStream = client.GetStream();
                 using NetworkStream serverStream = serverConnection.Client.GetStream();
