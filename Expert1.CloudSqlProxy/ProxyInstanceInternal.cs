@@ -317,7 +317,7 @@ namespace Expert1.CloudSqlProxy
             ServerCertificateSettings serverSettings = await certSource
                 .GetServerCertificateSettingsAsync(cancellationToken)
                 .ConfigureAwait(false);
-            using X509Certificate2 serverCaCertificate = serverSettings.CreateCertificate();
+            using ServerCertificateSettings.CertificateBundle serverCaCertificates = serverSettings.CreateCertificates();
 
             X509Certificate2 cert = await certSource
                 .GetValidClientCertificateAsync(cancellationToken)
@@ -334,7 +334,7 @@ namespace Expert1.CloudSqlProxy
                 RevocationMode = X509RevocationMode.NoCheck,
                 VerificationFlags = X509VerificationFlags.NoFlag
             };
-            chainPolicy.CustomTrustStore.Add(serverCaCertificate);
+            chainPolicy.CustomTrustStore.AddRange(serverCaCertificates.Certificates);
 
             SslClientAuthenticationOptions authenticationOptions = new()
             {

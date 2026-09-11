@@ -1,6 +1,8 @@
 using Google.Apis.SQLAdmin.v1beta4.Data;
 using System;
+using System.Collections.Generic;
 using System.Linq;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
 namespace Expert1.CloudSqlProxy
@@ -12,7 +14,7 @@ namespace Expert1.CloudSqlProxy
     /// </summary>
     internal sealed class ServerCertificateSettings
     {
-        private readonly byte[] certificateData;
+        private readonly byte[][] certificateData;
 
         public string TargetHost { get; }
         public bool RequireHostnameValidation { get; }
@@ -50,9 +52,7 @@ namespace Expert1.CloudSqlProxy
                     $"Unsupported Cloud SQL server CA mode '{connectSettings.ServerCaMode}'.");
             }
 
-            using X509Certificate2 certificate =
-                X509Certificate2.CreateFromPem(connectSettings.ServerCaCert.Cert.AsSpan());
-            certificateData = certificate.RawData;
+            certificateData = ParseCertificateData(connectSettings.ServerCaCert.Cert.AsSpan());
 
             // Capture the startup address from the same response as the TLS settings.
             ServerIp =
@@ -67,14 +67,62 @@ namespace Expert1.CloudSqlProxy
                     ?.IpAddress;
         }
 
-        // The caller owns this copy and must dispose it after TLS authentication.
-        public X509Certificate2 CreateCertificate()
+        private static byte[][] ParseCertificateData(ReadOnlySpan<char> pem)
         {
+            List<byte[]> certificates = new();
+            while (PemEncoding.TryFind(pem, out PemFields fields))
+            {
+                if (pem[fields.Label].SequenceEqual("CERTIFICATE".AsSpan()))
+                {
+                    // Dispose each parsed certificate even if a later PEM entry fails.
+                    using X509Certificate2 certificate = X509Certificate2.CreateFromPem(pem[fields.Location]);
+                    certificates.Add(certificate.RawData);
+                }
+
+                pem = pem[fields.Location.End..];
+            }
+
+            if (certificates.Count == 0)
+                throw new CryptographicException("Cloud SQL did not provide a server CA certificate.");
+
+            return certificates.ToArray();
+        }
+
+        // The caller owns all copies and must dispose the bundle after TLS authentication.
+        public CertificateBundle CreateCertificates()
+        {
+            CertificateBundle bundle = new();
+            try
+            {
+                foreach (byte[] data in certificateData)
+                {
 #if NET9_0_OR_GREATER
-            return X509CertificateLoader.LoadCertificate(certificateData);
+                    bundle.Certificates.Add(X509CertificateLoader.LoadCertificate(data));
 #else
-            return new X509Certificate2(certificateData);
+                    bundle.Certificates.Add(new X509Certificate2(data));
 #endif
+                }
+
+                return bundle;
+            }
+            catch
+            {
+                bundle.Dispose();
+                throw;
+            }
+        }
+
+        internal sealed class CertificateBundle : IDisposable
+        {
+            public X509Certificate2Collection Certificates { get; } = new();
+
+            public void Dispose()
+            {
+                foreach (X509Certificate2 certificate in Certificates)
+                    certificate.Dispose();
+
+                Certificates.Clear();
+            }
         }
     }
 }
