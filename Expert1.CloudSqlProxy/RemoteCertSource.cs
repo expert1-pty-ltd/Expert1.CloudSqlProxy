@@ -27,7 +27,6 @@ namespace Expert1.CloudSqlProxy
         private readonly SQLAdminService service;
         private RSA privateKey;
         private X509Certificate2 clientCert;
-        private byte[] clientCertPkcs12;
         private ServerCertificateSettings serverCertificateSettings;
         private long serverCertificateRefreshTimestamp;
         private int disposed;
@@ -181,10 +180,8 @@ namespace Expert1.CloudSqlProxy
                 try
                 {
                     clientCert?.Dispose();
-                    ClearPfxData(clientCertPkcs12);
                     privateKey?.Dispose();
                     clientCert = null;
-                    clientCertPkcs12 = null;
                     serverCertificateSettings = null;
                     privateKey = null;
                 }
@@ -298,7 +295,7 @@ namespace Expert1.CloudSqlProxy
                 try
                 {
                     newClientCert = LoadPkcs12(newPfxData);
-                    returnCert = LoadPkcs12(newPfxData);
+                    returnCert = new X509Certificate2(newClientCert);
 
                     certCacheLock.EnterWriteLock();
                     try
@@ -306,15 +303,10 @@ namespace Expert1.CloudSqlProxy
                         ThrowIfDisposed();
 
                         X509Certificate2 oldClientCert = clientCert;
-                        byte[] oldPfxData = clientCertPkcs12;
-
                         clientCert = newClientCert;
-                        clientCertPkcs12 = newPfxData;
                         newClientCert = null;
-                        newPfxData = null;
 
                         oldClientCert?.Dispose();
-                        ClearPfxData(oldPfxData);
                     }
                     finally
                     {
@@ -327,8 +319,11 @@ namespace Expert1.CloudSqlProxy
                 {
                     returnCert?.Dispose();
                     newClientCert?.Dispose();
-                    ClearPfxData(newPfxData);
                     throw;
+                }
+                finally
+                {
+                    ClearPfxData(newPfxData);
                 }
             }
             finally
@@ -345,7 +340,9 @@ namespace Expert1.CloudSqlProxy
                 // X509Certificate2.NotAfter is in LocalTime so compare to DateTime.Now.
                 if (clientCert != null && clientCert.NotAfter > DateTime.Now.Add(refreshWindow))
                 {
-                    certificate = LoadPkcs12(clientCertPkcs12);
+                    // The copy owns a reference to the certificate and private key,
+                    // so it remains usable if the cache is refreshed or disposed.
+                    certificate = new X509Certificate2(clientCert);
                     return true;
                 }
             }
@@ -368,8 +365,8 @@ namespace Expert1.CloudSqlProxy
             // Intentionally do not use EphemeralKeySet. Windows Schannel cannot reliably
             // use ephemeral private keys for SslStream client authentication.
             // DefaultKeySet may use temporary store-backed key material, but because
-            // PersistKeySet is not specified, disposing the certificate removes the key.
-            // Callers must therefore dispose every returned certificate.
+            // PersistKeySet is not specified, disposing the cached certificate and
+            // all its copies removes the key. Callers must dispose every returned copy.
             // See: https://github.com/dotnet/runtime/issues/23749
 #if NET9_0_OR_GREATER
             return X509CertificateLoader.LoadPkcs12(
