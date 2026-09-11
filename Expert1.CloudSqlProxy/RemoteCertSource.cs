@@ -2,6 +2,7 @@
 using Google.Apis.SQLAdmin.v1beta4;
 using Google.Apis.SQLAdmin.v1beta4.Data;
 using System;
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading;
@@ -31,7 +32,9 @@ namespace Expert1.CloudSqlProxy
         private int resourcesDisposed;
         private static readonly TimeSpan refreshWindow = TimeSpan.FromMinutes(15);
         private static readonly TimeSpan baseBackoff = TimeSpan.FromMilliseconds(200);
-        private static readonly TimeSpan refershLoopTime = TimeSpan.FromMinutes(50);
+        private static readonly TimeSpan refreshLoopTime = TimeSpan.FromMinutes(50);
+        private static readonly TimeSpan initialRefreshRetryDelay = TimeSpan.FromSeconds(30);
+        private static readonly TimeSpan maxRefreshRetryDelay = TimeSpan.FromMinutes(5);
         private static readonly TimeSpan disposeRefreshWaitTimeout = TimeSpan.FromSeconds(1);
         private readonly CancellationTokenSource refreshCts;
         private readonly Task refreshTask;
@@ -65,17 +68,46 @@ namespace Expert1.CloudSqlProxy
 
         private async Task BackgroundRefreshLoop(CancellationToken token)
         {
+            TimeSpan delay = refreshLoopTime;
+            TimeSpan retryDelay = initialRefreshRetryDelay;
+
             while (!token.IsCancellationRequested)
             {
                 try
                 {
-                    await Task.Delay(refershLoopTime, token);
-                    await GetValidClientCertificateAsync(token); // Will refresh if needed
+                    await Task.Delay(delay, token).ConfigureAwait(false);
+                    using X509Certificate2 certificate = await GetValidClientCertificateAsync(token).ConfigureAwait(false);
+                    delay = refreshLoopTime;
+                    retryDelay = initialRefreshRetryDelay;
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
                 {
                     break;
                 }
+                catch (Exception ex)
+                {
+                    if (token.IsCancellationRequested)
+                        break;
+
+                    delay = retryDelay;
+                    retryDelay = TimeSpan.FromTicks(Math.Min(retryDelay.Ticks * 2, maxRefreshRetryDelay.Ticks));
+                    TraceRefreshFailure(ex, delay);
+                }
+            }
+        }
+
+        private void TraceRefreshFailure(Exception exception, TimeSpan retryDelay)
+        {
+            try
+            {
+                // Token providers may include credentials in exception messages.
+                Trace.TraceWarning(
+                    "Cloud SQL certificate refresh for {0}/{1} failed ({2}); retrying in {3}.",
+                    project, regionName, exception.GetType().Name, retryDelay);
+            }
+            catch
+            {
+                // A failing trace listener must not stop certificate renewal.
             }
         }
 

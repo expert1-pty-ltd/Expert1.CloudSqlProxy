@@ -8,6 +8,7 @@ This project provides a .NET library for creating and managing secure connection
 - Automatic SSL/TLS certificate management
 - Supports multiple concurrent connections
 - Handles periodic certificate refresh
+- Retries failed background certificate refreshes with bounded backoff
 
 ## Prerequisites
 
