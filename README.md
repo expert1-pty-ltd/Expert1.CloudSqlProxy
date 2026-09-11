@@ -9,6 +9,7 @@ This project provides a .NET library for creating and managing secure connection
 - Supports multiple concurrent connections
 - Handles periodic certificate refresh
 - Retries failed background certificate refreshes with bounded backoff
+- Refreshes server CA and identity settings with a 50-minute cache lifetime
 
 ## Prerequisites
 

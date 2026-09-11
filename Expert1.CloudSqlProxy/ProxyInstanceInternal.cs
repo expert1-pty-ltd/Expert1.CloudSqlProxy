@@ -39,9 +39,6 @@ namespace Expert1.CloudSqlProxy
         private CancellationTokenSource cts;
         private Task listeningTask;
         private readonly RemoteCertSource certSource;
-        private X509Certificate2 serverCaCert;
-        private string targetHost;
-        private bool requireHostnameValidation;
         private BackendConnectionManager backendConnections;
         private readonly ConcurrentDictionary<Task, byte> activeConnectionTasks = new();
 
@@ -71,7 +68,6 @@ namespace Expert1.CloudSqlProxy
             ArgumentNullException.ThrowIfNull(httpClientInitializer);
 
             (project, region, instanceId) = Utilities.SplitName(instance);
-            targetHost = $"{project}:{instanceId}";
             sqlAdminService = new SQLAdminService(new BaseClientService.Initializer
             {
                 HttpClientInitializer = httpClientInitializer,
@@ -116,8 +112,6 @@ namespace Expert1.CloudSqlProxy
             {
                 // Dispose certificate resources before disposing dependencies they may use
                 certSource?.Dispose();
-                serverCaCert?.Dispose();
-                serverCaCert = null;
 
                 cts.Dispose();
                 sqlAdminService?.Dispose();
@@ -142,7 +136,7 @@ namespace Expert1.CloudSqlProxy
         internal async Task StartAsync(CancellationToken cancellationToken)
         {
             cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            Task serverCertificateTask = SetupServerCertificateAsync(cts.Token);
+            Task serverCertificateTask = certSource.GetServerCertificateSettingsAsync(cts.Token).AsTask();
             Task backendConnectionManagerTask = SetupBackendConnectionManager(cts.Token);
             await Task.WhenAll(serverCertificateTask, backendConnectionManagerTask).ConfigureAwait(false);
 
@@ -180,62 +174,6 @@ namespace Expert1.CloudSqlProxy
                 SQL_PORT,
                 MAX_POOL_SIZE,
                 TimeSpan.FromMinutes(PREWARMED_CONNECTION_VALIDATION_INTERVAL_MIN));
-        }
-
-        private async Task SetupServerCertificateAsync(CancellationToken cancellationToken)
-        {
-            if (serverCaCert == null)
-            {
-                ConnectSettings connectSettings = await sqlAdminService.Connect
-                    .Get(project, instanceId)
-                    .ExecuteAsync(cancellationToken)
-                    .ConfigureAwait(false);
-
-                serverCaCert = X509Certificate2.CreateFromPem(connectSettings.ServerCaCert.Cert.AsSpan());
-                ConfigureServerIdentityValidation(connectSettings);
-            }
-        }
-
-        private void ConfigureServerIdentityValidation(ConnectSettings connectSettings)
-        {
-            if (string.IsNullOrWhiteSpace(connectSettings.ServerCaMode) ||
-                string.Equals(
-                    connectSettings.ServerCaMode,
-                    "GOOGLE_MANAGED_INTERNAL_CA",
-                    StringComparison.Ordinal))
-            {
-                // The per-instance CA is unique to this Cloud SQL instance, so validating
-                // the certificate chain against that CA also establishes server identity.
-                targetHost = $"{project}:{instanceId}";
-                requireHostnameValidation = false;
-                return;
-            }
-
-            if (string.Equals(
-                    connectSettings.ServerCaMode,
-                    "GOOGLE_MANAGED_CAS_CA",
-                    StringComparison.Ordinal) ||
-                string.Equals(
-                    connectSettings.ServerCaMode,
-                    "CUSTOMER_MANAGED_CAS_CA",
-                    StringComparison.Ordinal))
-            {
-                if (string.IsNullOrWhiteSpace(connectSettings.DnsName))
-                {
-                    throw new InvalidOperationException(
-                        $"Cloud SQL did not provide a DNS name for server identity validation " +
-                        $"with CA mode '{connectSettings.ServerCaMode}'.");
-                }
-
-                // Shared and customer-managed CAs can sign certificates for more than one
-                // server, so the API-provided DNS name must also match the certificate SAN.
-                targetHost = connectSettings.DnsName;
-                requireHostnameValidation = true;
-                return;
-            }
-
-            throw new InvalidOperationException(
-                $"Unsupported Cloud SQL server CA mode '{connectSettings.ServerCaMode}'.");
         }
 
         private async Task ListenForConnectionsAsync(CancellationToken cancellationToken)
@@ -389,6 +327,11 @@ namespace Expert1.CloudSqlProxy
             NetworkStream networkStream,
             CancellationToken cancellationToken)
         {
+            ServerCertificateSettings serverSettings = await certSource
+                .GetServerCertificateSettingsAsync(cancellationToken)
+                .ConfigureAwait(false);
+            using X509Certificate2 serverCaCertificate = serverSettings.CreateCertificate();
+
             X509Certificate2 cert = await certSource
                 .GetValidClientCertificateAsync(cancellationToken)
                 .ConfigureAwait(false);
@@ -404,17 +347,17 @@ namespace Expert1.CloudSqlProxy
                 RevocationMode = X509RevocationMode.NoCheck,
                 VerificationFlags = X509VerificationFlags.NoFlag
             };
-            chainPolicy.CustomTrustStore.Add(serverCaCert);
+            chainPolicy.CustomTrustStore.Add(serverCaCertificate);
 
             SslClientAuthenticationOptions authenticationOptions = new()
             {
-                TargetHost = targetHost,
+                TargetHost = serverSettings.TargetHost,
                 ClientCertificates = certCollection,
                 EnabledSslProtocols = SslProtocols.Tls13,
                 CertificateChainPolicy = chainPolicy
             };
 
-            if (!requireHostnameValidation)
+            if (!serverSettings.RequireHostnameValidation)
             {
                 authenticationOptions.RemoteCertificateValidationCallback =
                     ValidatePerInstanceServerCertificate;

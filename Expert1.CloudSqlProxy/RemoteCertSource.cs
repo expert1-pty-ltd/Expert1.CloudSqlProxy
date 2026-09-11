@@ -13,7 +13,7 @@ namespace Expert1.CloudSqlProxy
     /// <summary>
     /// Manages the retrieval and caching of certificates required for establishing
     /// secure connections to Google Cloud SQL instances. Handles RSA key generation,
-    /// and fetching ephemeral certificates from the Cloud SQL Admin API.
+    /// ephemeral client certificates, and server CA and identity settings.
     /// </summary>
     internal sealed class RemoteCertSource : IDisposable
     {
@@ -28,6 +28,8 @@ namespace Expert1.CloudSqlProxy
         private RSA privateKey;
         private X509Certificate2 clientCert;
         private byte[] clientCertPkcs12;
+        private ServerCertificateSettings serverCertificateSettings;
+        private long serverCertificateRefreshTimestamp;
         private int disposed;
         private int resourcesDisposed;
         private static readonly TimeSpan refreshWindow = TimeSpan.FromMinutes(15);
@@ -39,6 +41,7 @@ namespace Expert1.CloudSqlProxy
         private readonly CancellationTokenSource refreshCts;
         private readonly Task refreshTask;
         private readonly string project;
+        private readonly string instanceId;
         private readonly string regionName;
         private string publicKeyPem;
 
@@ -46,6 +49,7 @@ namespace Expert1.CloudSqlProxy
         {
             this.service = service;
             (project, string region, string name) = Utilities.SplitName(instance);
+            instanceId = name;
             regionName = $"{region}~{name}";
             refreshCts = new();
             refreshTask = Task.Run(() => BackgroundRefreshLoop(refreshCts.Token));
@@ -76,6 +80,7 @@ namespace Expert1.CloudSqlProxy
                 try
                 {
                     await Task.Delay(delay, token).ConfigureAwait(false);
+                    await GetServerCertificateSettingsAsync(token).ConfigureAwait(false);
                     using X509Certificate2 certificate = await GetValidClientCertificateAsync(token).ConfigureAwait(false);
                     delay = refreshLoopTime;
                     retryDelay = initialRefreshRetryDelay;
@@ -180,6 +185,7 @@ namespace Expert1.CloudSqlProxy
                     privateKey?.Dispose();
                     clientCert = null;
                     clientCertPkcs12 = null;
+                    serverCertificateSettings = null;
                     privateKey = null;
                 }
                 finally
@@ -193,6 +199,66 @@ namespace Expert1.CloudSqlProxy
                 certRefreshLock.Dispose();
                 certCacheLock.Dispose();
                 refreshCts.Dispose();
+            }
+        }
+
+        public ValueTask<ServerCertificateSettings> GetServerCertificateSettingsAsync(CancellationToken cancellationToken)
+        {
+            ThrowIfDisposed();
+            cancellationToken.ThrowIfCancellationRequested();
+            if (TryGetCachedServerCertificateSettings(out ServerCertificateSettings settings))
+                return new ValueTask<ServerCertificateSettings>(settings);
+
+            return new ValueTask<ServerCertificateSettings>(GetServerCertificateSettingsSlowAsync(cancellationToken));
+        }
+
+        private async Task<ServerCertificateSettings> GetServerCertificateSettingsSlowAsync(CancellationToken cancellationToken)
+        {
+            await certRefreshLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                ThrowIfDisposed();
+                if (TryGetCachedServerCertificateSettings(out ServerCertificateSettings settings))
+                    return settings;
+
+                ConnectSettings connectSettings = await service.Connect
+                    .Get(project, instanceId)
+                    .ExecuteAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                settings = new ServerCertificateSettings(connectSettings, project, instanceId);
+
+                certCacheLock.EnterWriteLock();
+                try
+                {
+                    ThrowIfDisposed();
+                    serverCertificateSettings = settings;
+                    serverCertificateRefreshTimestamp = Environment.TickCount64;
+                }
+                finally
+                {
+                    certCacheLock.ExitWriteLock();
+                }
+
+                return settings;
+            }
+            finally
+            {
+                certRefreshLock.Release();
+            }
+        }
+
+        private bool TryGetCachedServerCertificateSettings(out ServerCertificateSettings settings)
+        {
+            certCacheLock.EnterReadLock();
+            try
+            {
+                settings = serverCertificateSettings;
+                return settings != null &&
+                    Environment.TickCount64 - serverCertificateRefreshTimestamp < refreshLoopTime.TotalMilliseconds;
+            }
+            finally
+            {
+                certCacheLock.ExitReadLock();
             }
         }
 
