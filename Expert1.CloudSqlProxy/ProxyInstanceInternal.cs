@@ -249,7 +249,11 @@ namespace Expert1.CloudSqlProxy
                 // Create a linked CTS to manage cancellation for this specific connection
                 using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(globalCancellationToken);
                 cancellationToken = connectionCts.Token;
-                connectionCts.CancelAfter(connectionSetupTimeout);
+                await using var setupTimer = new Timer(
+                    static state => Utilities.CancelIgnoringCallbackErrors((CancellationTokenSource)state),
+                    connectionCts,
+                    connectionSetupTimeout,
+                    Timeout.InfiniteTimeSpan);
 
                 using BackendConnectionManager.BackendConnectionLease serverConnection =
                     await backendConnections.TryRentConnectionAsync(cancellationToken);
@@ -263,8 +267,8 @@ namespace Expert1.CloudSqlProxy
                 using NetworkStream serverStream = serverConnection.Client.GetStream();
                 using SslStream sslStream = await SetupSecureConnectionAsync(serverStream, cancellationToken);
 
-                // The deadline covers connection setup, not the lifetime of the tunnel.
-                connectionCts.CancelAfter(Timeout.InfiniteTimeSpan);
+                // Finish any running timeout callback before establishing the tunnel.
+                await setupTimer.DisposeAsync().ConfigureAwait(false);
                 cancellationToken.ThrowIfCancellationRequested();
                 connectionEstablished = true;
 
