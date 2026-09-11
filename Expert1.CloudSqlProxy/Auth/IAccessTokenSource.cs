@@ -19,6 +19,10 @@ namespace Expert1.CloudSqlProxy.Auth
         /// Returns a valid Google API access token. Implementations may cache and refresh
         /// tokens internally and must be safe for concurrent callers.
         /// </summary>
+        /// <param name="cancellationToken">
+        /// Cancels token acquisition. Implementations should honor cancellation so
+        /// connection setup and shutdown can stop promptly.
+        /// </param>
         ValueTask<AccessToken> GetTokenAsync(CancellationToken cancellationToken);
     }
 }

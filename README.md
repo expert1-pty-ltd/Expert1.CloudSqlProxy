@@ -150,6 +150,8 @@ For credential-file authentication, each call reads a snapshot of the file's cur
 
 Each shared proxy supports up to 100 backend connections. When all backend slots are occupied, additional client connections are closed immediately. Clients can retry after a slot becomes available.
 
+For each accepted client, backend TCP connection, certificate retrieval, and TLS authentication have a 30-second setup deadline. The deadline is removed after authentication so established connections can remain open. Custom token sources should honor cancellation to allow prompt cleanup when setup times out.
+
 ```csharp
 using ProxyInstance proxyInstance = await ProxyInstance.StartProxyAsync(
     AuthenticationMethod.CredentialFile,

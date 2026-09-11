@@ -31,6 +31,7 @@ namespace Expert1.CloudSqlProxy
         private const int MAX_POOL_SIZE = 100;
         private const int PREWARMED_CONNECTION_VALIDATION_INTERVAL_MIN = 5;
         private const int SQL_PORT = 3307;
+        private static readonly TimeSpan connectionSetupTimeout = TimeSpan.FromSeconds(30);
         private readonly string project;
         private readonly string region;
         private readonly string instanceId;
@@ -241,11 +242,14 @@ namespace Expert1.CloudSqlProxy
 
         private async Task HandleClientAsync(TcpClient client, CancellationToken globalCancellationToken)
         {
+            CancellationToken cancellationToken = default;
+            bool connectionEstablished = false;
             try
             {
                 // Create a linked CTS to manage cancellation for this specific connection
                 using var connectionCts = CancellationTokenSource.CreateLinkedTokenSource(globalCancellationToken);
-                CancellationToken cancellationToken = connectionCts.Token;
+                cancellationToken = connectionCts.Token;
+                connectionCts.CancelAfter(connectionSetupTimeout);
 
                 using BackendConnectionManager.BackendConnectionLease serverConnection =
                     await backendConnections.TryRentConnectionAsync(cancellationToken);
@@ -259,6 +263,11 @@ namespace Expert1.CloudSqlProxy
                 using NetworkStream serverStream = serverConnection.Client.GetStream();
                 using SslStream sslStream = await SetupSecureConnectionAsync(serverStream, cancellationToken);
 
+                // The deadline covers connection setup, not the lifetime of the tunnel.
+                connectionCts.CancelAfter(Timeout.InfiniteTimeSpan);
+                cancellationToken.ThrowIfCancellationRequested();
+                connectionEstablished = true;
+
                 // Set up forwarding between client and server
                 Task clientToServerTask = ProxyTrafficAsync(clientStream, sslStream, cancellationToken);
                 Task serverToClientTask = ProxyTrafficAsync(sslStream, clientStream, cancellationToken);
@@ -268,6 +277,12 @@ namespace Expert1.CloudSqlProxy
                 // Ensure cancellation is requested for the other connection task
                 connectionCts.Cancel();
                 await Task.WhenAll(clientToServerTask, serverToClientTask);
+            }
+            catch (OperationCanceledException ex) when (
+                !connectionEstablished && cancellationToken.IsCancellationRequested &&
+                !globalCancellationToken.IsCancellationRequested)
+            {
+                throw new TimeoutException("Cloud SQL connection setup timed out.", ex);
             }
             catch (Exception ex) when (IsExpectedConnectionClose(ex, globalCancellationToken))
             {
