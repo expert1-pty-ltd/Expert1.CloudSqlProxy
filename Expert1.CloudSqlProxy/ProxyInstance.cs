@@ -50,7 +50,8 @@ namespace Expert1.CloudSqlProxy
         public string DataSource => proxyInstance.DataSource;
 
         /// <summary>
-        /// Start the proxy instance. This method will block until the proxy is connected.
+        /// Starts a shared proxy if needed and returns a lease.
+        /// Initial startup waits for backend TCP connectivity; reuse does not open another connection.
         /// </summary>
         /// <param name="authenticationMethod">authentication method</param>
         /// <param name="instance">instance</param>
@@ -63,12 +64,12 @@ namespace Expert1.CloudSqlProxy
             ArgumentNullException.ThrowIfNull(instance);
             ArgumentNullException.ThrowIfNull(credentials);
 
-            ProxyInstance proxyInstance = await InstanceManager.GetOrCreateInstanceAsync(authenticationMethod, instance, credentials).ConfigureAwait(false);
-            return await PrewarmLeaseAsync(proxyInstance).ConfigureAwait(false);
+            return await InstanceManager.GetOrCreateInstanceAsync(authenticationMethod, instance, credentials).ConfigureAwait(false);
         }
 
         /// <summary>
-        /// Start the proxy instance. This method will block until the proxy is connected.
+        /// Starts a shared proxy if needed and returns a lease.
+        /// Initial startup waits for backend TCP connectivity; reuse does not open another connection.
         /// </summary>
         /// <param name="instance">Cloud SQL instance connection name.</param>
         /// <param name="accessTokenSource">Source for Google Cloud access tokens. The source instance is used as the proxy reuse identity.</param>
@@ -79,12 +80,12 @@ namespace Expert1.CloudSqlProxy
             ArgumentNullException.ThrowIfNull(instance);
             ArgumentNullException.ThrowIfNull(accessTokenSource);
 
-            ProxyInstance proxyInstance = await InstanceManager.GetOrCreateInstanceAsync(instance, accessTokenSource).ConfigureAwait(false);
-            return await PrewarmLeaseAsync(proxyInstance).ConfigureAwait(false);
+            return await InstanceManager.GetOrCreateInstanceAsync(instance, accessTokenSource).ConfigureAwait(false);
         }
 
         /// <summary>
-        /// Start the proxy instance. This method will block until the proxy is connected.
+        /// Starts a shared proxy if needed and returns a lease.
+        /// Initial startup waits for backend TCP connectivity; reuse does not open another connection.
         /// Reuse the same <see cref="GoogleCredential"/> instance to reuse the same shared proxy.
         /// </summary>
         /// <param name="instance">Cloud SQL instance connection name.</param>
@@ -96,12 +97,12 @@ namespace Expert1.CloudSqlProxy
             ArgumentNullException.ThrowIfNull(instance);
             ArgumentNullException.ThrowIfNull(credential);
 
-            ProxyInstance proxyInstance = await InstanceManager.GetOrCreateInstanceAsync(instance, credential).ConfigureAwait(false);
-            return await PrewarmLeaseAsync(proxyInstance).ConfigureAwait(false);
+            return await InstanceManager.GetOrCreateInstanceAsync(instance, credential).ConfigureAwait(false);
         }
 
         /// <summary>
-        /// Start the proxy instance. This method will block until the proxy is connected.
+        /// Starts a shared proxy if needed and returns a lease.
+        /// Initial startup waits for backend TCP connectivity; reuse does not open another connection.
         /// </summary>
         public static ProxyInstance StartProxy(
             string instance,
@@ -111,7 +112,8 @@ namespace Expert1.CloudSqlProxy
         }
 
         /// <summary>
-        /// Start the proxy instance. This method will block until the proxy is connected.
+        /// Starts a shared proxy if needed and returns a lease.
+        /// Initial startup waits for backend TCP connectivity; reuse does not open another connection.
         /// Reuse the same <see cref="GoogleCredential"/> instance to reuse the same shared proxy.
         /// </summary>
         /// <param name="instance">Cloud SQL instance connection name.</param>
@@ -124,7 +126,8 @@ namespace Expert1.CloudSqlProxy
         }
 
         /// <summary>
-        /// Start the proxy instance. This method will block until the proxy is connected.
+        /// Starts a shared proxy if needed and returns a lease.
+        /// Initial startup waits for backend TCP connectivity; reuse does not open another connection.
         /// </summary>
         /// <param name="authenticationMethod">authentication method</param>
         /// <param name="instance">instance</param>
@@ -135,23 +138,6 @@ namespace Expert1.CloudSqlProxy
             string credentials)
         {
             return StartProxyAsync(authenticationMethod, instance, credentials).GetAwaiter().GetResult();
-        }
-
-        internal Task PrewarmConnectionAsync()
-            => proxyInstance.PrewarmConnectionAsync();
-
-        private static async Task<ProxyInstance> PrewarmLeaseAsync(ProxyInstance proxyInstance)
-        {
-            try
-            {
-                await proxyInstance.PrewarmConnectionAsync().ConfigureAwait(false);
-                return proxyInstance;
-            }
-            catch
-            {
-                proxyInstance.Dispose();
-                throw;
-            }
         }
 
         /// <summary>

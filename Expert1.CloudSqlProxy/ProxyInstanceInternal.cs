@@ -91,9 +91,6 @@ namespace Expert1.CloudSqlProxy
         /// </summary>
         public string DataSource => $"127.0.0.1,{Port}";
 
-        internal Task PrewarmConnectionAsync()
-            => backendConnections.EnsurePrewarmedConnectionAsync(cts.Token);
-
         private async Task StopAsync(CancellationToken cancellationToken)
         {
             // Signal all background work to stop
@@ -148,6 +145,10 @@ namespace Expert1.CloudSqlProxy
             Task serverCertificateTask = SetupServerCertificateAsync(cts.Token);
             Task backendConnectionManagerTask = SetupBackendConnectionManager(cts.Token);
             await Task.WhenAll(serverCertificateTask, backendConnectionManagerTask).ConfigureAwait(false);
+
+            // Establish initial connectivity once for the shared instance. Acquiring
+            // another lease must not depend on spare backend connection capacity.
+            await backendConnections.EnsurePrewarmedConnectionAsync(cts.Token).ConfigureAwait(false);
             cts.Token.ThrowIfCancellationRequested();
 
             listener = new TcpListener(IPAddress.Loopback, 0); // Listen on a random port
