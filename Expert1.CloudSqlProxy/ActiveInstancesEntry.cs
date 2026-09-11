@@ -27,6 +27,10 @@ namespace Expert1.CloudSqlProxy
             catch (ObjectDisposedException)
             {
             }
+            catch (AggregateException)
+            {
+                // Cancellation is signaled even if a callback fails; shutdown must still clean up.
+            }
         }
 
         public void Dispose()

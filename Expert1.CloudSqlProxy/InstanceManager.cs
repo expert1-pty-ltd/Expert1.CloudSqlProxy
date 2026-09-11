@@ -144,7 +144,6 @@ internal static class InstanceManager
             if (entry.RefCount == 0)
             {
                 activeInstances.Remove(cacheKey);
-                entry.Cancel();
                 instanceTaskToStop = entry.InstanceTask;
             }
             else if (entry.RefCount < 0)
@@ -155,6 +154,10 @@ internal static class InstanceManager
 
         if (refCountBelowZero)
             Debug.Fail($"Refcount for {cacheKey.Instance} dropped below zero");
+
+        // Cancellation invokes callbacks that may block or acquire another proxy.
+        if (instanceTaskToStop is not null)
+            entry.Cancel();
 
         StopWhenReady(instanceTaskToStop, entry);
     }
@@ -229,8 +232,13 @@ internal static class InstanceManager
             foreach (ActiveInstancesEntry entry in entriesToStop)
             {
                 entry.RefCount = 0;
-                entry.Cancel();
             }
+        }
+
+        // Cancel all detached entries outside the cache lock before waiting for cleanup.
+        foreach (ActiveInstancesEntry entry in entriesToStop)
+        {
+            entry.Cancel();
         }
 
         foreach (ActiveInstancesEntry entry in entriesToStop)
