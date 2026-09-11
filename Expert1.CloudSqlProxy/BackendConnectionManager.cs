@@ -14,6 +14,7 @@ namespace Expert1.CloudSqlProxy
         private readonly Queue<TcpClient> readyConnections = new();
         private readonly SemaphoreSlim capacity;
         private readonly SemaphoreSlim connectionAvailable;
+        private readonly int maxConnections;
         private readonly string serverAddress;
         private readonly int serverPort;
         private readonly Timer cleanupTimer;
@@ -37,6 +38,7 @@ namespace Expert1.CloudSqlProxy
 
             this.serverAddress = serverAddress;
             this.serverPort = serverPort;
+            this.maxConnections = maxConnections;
             capacity = new SemaphoreSlim(maxConnections, maxConnections);
             connectionAvailable = new SemaphoreSlim(0, maxConnections);
             cleanupTimer = new Timer(
@@ -262,17 +264,12 @@ namespace Expert1.CloudSqlProxy
 
         private void SignalConnectionAvailableCore()
         {
-            if (disposed)
+            // Signalers hold sync; waiters can only decrease the count, so checking
+            // the limit here avoids throwing when enough notifications are pending.
+            if (disposed || connectionAvailable.CurrentCount == maxConnections)
                 return;
 
-            try
-            {
-                connectionAvailable.Release();
-            }
-            catch (SemaphoreFullException)
-            {
-                // A bounded notification is already pending for each possible connection slot.
-            }
+            connectionAvailable.Release();
         }
 
         private static bool IsConnectionValid(TcpClient connection)
