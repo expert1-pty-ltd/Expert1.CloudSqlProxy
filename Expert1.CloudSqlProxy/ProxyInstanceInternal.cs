@@ -6,6 +6,7 @@ using Google.Apis.SQLAdmin.v1beta4;
 using System;
 using System.Buffers;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -194,15 +195,39 @@ namespace Expert1.CloudSqlProxy
             Task connectionTask = HandleClientAsync(client, cancellationToken);
             activeConnectionTasks.TryAdd(connectionTask, 0);
             _ = connectionTask.ContinueWith(
-                static (task, state) =>
-                {
-                    var activeTasks = (ConcurrentDictionary<Task, byte>)state;
-                    activeTasks.TryRemove(task, out _);
-                },
-                activeConnectionTasks,
+                static (task, state) => ((ProxyInstanceInternal)state).CompleteClientConnection(task),
+                this,
                 CancellationToken.None,
                 TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);
+        }
+
+        private void CompleteClientConnection(Task connectionTask)
+        {
+            // Reading Exception observes every fault, including failures during cleanup.
+            AggregateException failure = connectionTask.Exception;
+            activeConnectionTasks.TryRemove(connectionTask, out _);
+
+            if (failure is not null)
+                TraceConnectionFailure(failure);
+        }
+
+        private void TraceConnectionFailure(AggregateException failure)
+        {
+            try
+            {
+                foreach (Exception exception in failure.Flatten().InnerExceptions)
+                {
+                    // Token providers and API responses can include credentials in messages.
+                    Trace.TraceWarning(
+                        "Cloud SQL connection for {0} failed ({1}).",
+                        Instance, exception.GetType().Name);
+                }
+            }
+            catch
+            {
+                // A failing trace listener must not fault the connection completion task.
+            }
         }
 
         private async Task WaitForActiveConnectionsAsync(CancellationToken cancellationToken)
