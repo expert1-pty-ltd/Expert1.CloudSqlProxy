@@ -1,11 +1,12 @@
 using Google.Apis.SQLAdmin.v1beta4.Data;
 using System;
+using System.Linq;
 using System.Security.Cryptography.X509Certificates;
 
 namespace Expert1.CloudSqlProxy
 {
     /// <summary>
-    /// An immutable snapshot of the CA and server identity returned by the Admin API.
+    /// An immutable snapshot of the CA, server identity, and address returned by the Admin API.
     /// Stores public certificate bytes so refreshing the cache cannot invalidate an
     /// in-flight handshake's certificate.
     /// </summary>
@@ -15,6 +16,7 @@ namespace Expert1.CloudSqlProxy
 
         public string TargetHost { get; }
         public bool RequireHostnameValidation { get; }
+        public string ServerIp { get; }
 
         public ServerCertificateSettings(ConnectSettings connectSettings, string project, string instanceId)
         {
@@ -51,6 +53,18 @@ namespace Expert1.CloudSqlProxy
             using X509Certificate2 certificate =
                 X509Certificate2.CreateFromPem(connectSettings.ServerCaCert.Cert.AsSpan());
             certificateData = certificate.RawData;
+
+            // Capture the startup address from the same response as the TLS settings.
+            ServerIp =
+                connectSettings.IpAddresses?
+                    .FirstOrDefault(x => string.Equals(x?.Type, "PRIMARY", StringComparison.OrdinalIgnoreCase))
+                    ?.IpAddress
+                ?? connectSettings.IpAddresses?
+                    .FirstOrDefault(x => string.Equals(x?.Type, "PRIVATE", StringComparison.OrdinalIgnoreCase))
+                    ?.IpAddress
+                ?? connectSettings.IpAddresses?
+                    .FirstOrDefault()
+                    ?.IpAddress;
         }
 
         // The caller owns this copy and must dispose it after TLS authentication.

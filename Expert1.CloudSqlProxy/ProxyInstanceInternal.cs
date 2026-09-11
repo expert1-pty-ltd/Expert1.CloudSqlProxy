@@ -3,7 +3,6 @@ using Google.Apis.Auth.OAuth2;
 using Google.Apis.Http;
 using Google.Apis.Services;
 using Google.Apis.SQLAdmin.v1beta4;
-using Google.Apis.SQLAdmin.v1beta4.Data;
 using System;
 using System.Buffers;
 using System.Collections.Concurrent;
@@ -136,9 +135,10 @@ namespace Expert1.CloudSqlProxy
         internal async Task StartAsync(CancellationToken cancellationToken)
         {
             cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            Task serverCertificateTask = certSource.GetServerCertificateSettingsAsync(cts.Token).AsTask();
-            Task backendConnectionManagerTask = SetupBackendConnectionManager(cts.Token);
-            await Task.WhenAll(serverCertificateTask, backendConnectionManagerTask).ConfigureAwait(false);
+            ServerCertificateSettings settings = await certSource
+                .GetServerCertificateSettingsAsync(cts.Token)
+                .ConfigureAwait(false);
+            SetupBackendConnectionManager(settings.ServerIp);
 
             // Establish initial connectivity once for the shared instance. Acquiring
             // another lease must not depend on spare backend connection capacity.
@@ -151,21 +151,8 @@ namespace Expert1.CloudSqlProxy
             listeningTask = ListenForConnectionsAsync(cts.Token);
         }
 
-        private async Task SetupBackendConnectionManager(CancellationToken cancellationToken)
+        private void SetupBackendConnectionManager(string serverIp)
         {
-            DatabaseInstance instanceDetails = await sqlAdminService.Instances.Get(project, instanceId).ExecuteAsync(cancellationToken);
-
-            string serverIp =
-                instanceDetails.IpAddresses?
-                    .FirstOrDefault(x => string.Equals(x.Type, "PRIMARY", StringComparison.OrdinalIgnoreCase))
-                    ?.IpAddress
-                ?? instanceDetails.IpAddresses?
-                    .FirstOrDefault(x => string.Equals(x.Type, "PRIVATE", StringComparison.OrdinalIgnoreCase))
-                    ?.IpAddress
-                ?? instanceDetails.IpAddresses?
-                    .FirstOrDefault()
-                    ?.IpAddress;
-
             if (string.IsNullOrWhiteSpace(serverIp))
                 throw new InvalidOperationException("Cloud SQL instance has no usable IP addresses.");
 
