@@ -320,7 +320,8 @@ namespace Expert1.CloudSqlProxy
 
         private static async Task ProxyTrafficAsync(Stream input, Stream output, CancellationToken cancellationToken)
         {
-            byte[] buffer = ArrayPool<byte>.Shared.Rent(8192);
+            // Reduce forwarding calls for large transfers while keeping per-tunnel buffers small.
+            byte[] buffer = ArrayPool<byte>.Shared.Rent(16 * 1024);
             try
             {
                 while (!cancellationToken.IsCancellationRequested)
