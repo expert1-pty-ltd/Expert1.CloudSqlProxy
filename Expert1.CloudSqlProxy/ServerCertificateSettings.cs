@@ -18,7 +18,9 @@ namespace Expert1.CloudSqlProxy
 
         public ServerCertificateSettings(ConnectSettings connectSettings, string project, string instanceId)
         {
+            // The Admin API defines an unspecified CA mode as the per-instance CA.
             if (string.IsNullOrWhiteSpace(connectSettings.ServerCaMode) ||
+                string.Equals(connectSettings.ServerCaMode, "CA_MODE_UNSPECIFIED", StringComparison.Ordinal) ||
                 string.Equals(connectSettings.ServerCaMode, "GOOGLE_MANAGED_INTERNAL_CA", StringComparison.Ordinal))
             {
                 // The per-instance CA also establishes server identity.
