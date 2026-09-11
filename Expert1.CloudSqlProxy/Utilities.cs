@@ -1,6 +1,7 @@
 ﻿using System;
 using System.IO;
 using System.Text.Json;
+using System.Threading;
 using Google.Apis.Auth.OAuth2;
 
 namespace Expert1.CloudSqlProxy
@@ -22,6 +23,18 @@ namespace Expert1.CloudSqlProxy
         }
 
         private static string GetVersion() => typeof(ProxyInstance).Assembly.GetName().Version.ToString(3);
+
+        public static void CancelIgnoringCallbackErrors(CancellationTokenSource source)
+        {
+            try
+            {
+                source.Cancel();
+            }
+            catch (AggregateException)
+            {
+                // Cancellation is signaled even if a callback fails; cleanup must continue.
+            }
+        }
 
         public static (string project, string region, string name) SplitName(string instance)
         {

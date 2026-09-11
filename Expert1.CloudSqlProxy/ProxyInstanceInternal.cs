@@ -91,7 +91,7 @@ namespace Expert1.CloudSqlProxy
         private async Task StopAsync(CancellationToken cancellationToken)
         {
             // Signal all background work to stop
-            cts.Cancel();
+            Utilities.CancelIgnoringCallbackErrors(cts);
 
             // Stop accepting new connections immediately
             listener?.Stop();
@@ -275,7 +275,7 @@ namespace Expert1.CloudSqlProxy
                 await Task.WhenAny(clientToServerTask, serverToClientTask);
 
                 // Ensure cancellation is requested for the other connection task
-                connectionCts.Cancel();
+                Utilities.CancelIgnoringCallbackErrors(connectionCts);
                 await Task.WhenAll(clientToServerTask, serverToClientTask);
             }
             catch (OperationCanceledException ex) when (

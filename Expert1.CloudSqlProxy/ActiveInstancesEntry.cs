@@ -22,14 +22,10 @@ namespace Expert1.CloudSqlProxy
         {
             try
             {
-                cancellation.Cancel();
+                Utilities.CancelIgnoringCallbackErrors(cancellation);
             }
             catch (ObjectDisposedException)
             {
-            }
-            catch (AggregateException)
-            {
-                // Cancellation is signaled even if a callback fails; shutdown must still clean up.
             }
         }
 

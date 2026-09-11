@@ -141,7 +141,7 @@ namespace Expert1.CloudSqlProxy
             if (Interlocked.Exchange(ref disposed, 1) != 0)
                 return;
 
-            refreshCts.Cancel();
+            Utilities.CancelIgnoringCallbackErrors(refreshCts);
 
             if (WaitForRefreshTask() && TryDisposeResources())
             {
