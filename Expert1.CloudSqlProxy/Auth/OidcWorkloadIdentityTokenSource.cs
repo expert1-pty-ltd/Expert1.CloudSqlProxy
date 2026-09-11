@@ -35,10 +35,12 @@ public sealed class OidcWorkloadIdentityTokenSource : IAccessTokenSource, IDispo
     private readonly bool _disposeHttp;
 
     private readonly SemaphoreSlim _refreshGate = new(1, 1);
-    private AccessToken _current = new("", DateTimeOffset.MinValue);
+    private CachedToken _current;
     private int _activeOperations;
     private int _disposed;
     private int _resourcesDisposed;
+
+    private sealed record CachedToken(AccessToken Token, DateTimeOffset RefreshAfter);
 
     /// <summary>
     /// Initializes a new instance of the <see cref="OidcWorkloadIdentityTokenSource"/> class.
@@ -53,7 +55,9 @@ public sealed class OidcWorkloadIdentityTokenSource : IAccessTokenSource, IDispo
     /// An optional service account email to impersonate when generating access tokens.
     /// </param>
     /// <param name="refreshSkew">
-    /// An optional time window used to proactively refresh tokens before they expire.
+    /// The maximum time window used to proactively refresh tokens before they expire.
+    /// Defaults to five minutes and must be non-negative. The window is capped at
+    /// half the token's remaining lifetime when it is received.
     /// </param>
     /// <param name="httpClient">
     /// An optional <see cref="HttpClient"/> used for token exchange requests.
@@ -68,6 +72,8 @@ public sealed class OidcWorkloadIdentityTokenSource : IAccessTokenSource, IDispo
     {
         ArgumentNullException.ThrowIfNull(getOidcIdToken);
         ArgumentNullException.ThrowIfNull(audience);
+        if (refreshSkew < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(refreshSkew), "The refresh window must be non-negative.");
 
         _getOidcIdToken = getOidcIdToken;
         _audience = audience;
@@ -107,9 +113,9 @@ public sealed class OidcWorkloadIdentityTokenSource : IAccessTokenSource, IDispo
         BeginOperation();
         try
         {
-            AccessToken cached = Volatile.Read(ref _current);
-            if (!cached.IsExpired(_refreshSkew))
-                return cached;
+            CachedToken cached = Volatile.Read(ref _current);
+            if (cached is not null && DateTimeOffset.UtcNow < cached.RefreshAfter)
+                return cached.Token;
 
             await _refreshGate.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
@@ -117,11 +123,17 @@ public sealed class OidcWorkloadIdentityTokenSource : IAccessTokenSource, IDispo
                 ThrowIfDisposed();
 
                 cached = Volatile.Read(ref _current);
-                if (!cached.IsExpired(_refreshSkew))
-                    return cached;
+                if (cached is not null && DateTimeOffset.UtcNow < cached.RefreshAfter)
+                    return cached.Token;
 
                 AccessToken refreshed = await RefreshAsync(cancellationToken).ConfigureAwait(false);
-                Volatile.Write(ref _current, refreshed);
+                // Fix the deadline once per token; recalculating it on cache reads
+                // would keep moving the refresh point toward the actual expiry.
+                TimeSpan remainingLifetime = refreshed.ExpiresAt - DateTimeOffset.UtcNow;
+                TimeSpan refreshWindow = TimeSpan.FromTicks(
+                    Math.Min(_refreshSkew.Ticks, Math.Max(0, remainingLifetime.Ticks / 2)));
+                CachedToken replacement = new(refreshed, refreshed.ExpiresAt - refreshWindow);
+                Volatile.Write(ref _current, replacement);
                 return refreshed;
             }
             finally
