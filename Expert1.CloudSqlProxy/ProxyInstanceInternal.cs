@@ -137,20 +137,71 @@ namespace Expert1.CloudSqlProxy
         internal async Task StartAsync(CancellationToken cancellationToken)
         {
             cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            ServerCertificateSettings settings = await certSource
-                .GetServerCertificateSettingsAsync(cts.Token)
-                .ConfigureAwait(false);
-            SetupBackendConnectionManager(settings.ServerIp);
-
-            // Establish initial connectivity once for the shared instance. Acquiring
-            // another lease must not depend on spare backend connection capacity.
-            await backendConnections.EnsurePrewarmedConnectionAsync(cts.Token).ConfigureAwait(false);
+            // Start metadata retrieval before generating the client key so both API
+            // requests and TCP prewarming can overlap during shared startup.
+            await Task.WhenAll(
+                PrewarmBackendConnectionAsync(cts.Token),
+                PrewarmClientCertificateAsync(cts.Token)).ConfigureAwait(false);
             cts.Token.ThrowIfCancellationRequested();
 
             listener = new TcpListener(IPAddress.Loopback, 0); // Listen on a random port
             listener.Start();
             Port = ((IPEndPoint)listener.LocalEndpoint).Port; // Get the assigned port
             listeningTask = ListenForConnectionsAsync(cts.Token);
+        }
+
+        private async Task PrewarmBackendConnectionAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                ServerCertificateSettings settings = await certSource
+                    .GetServerCertificateSettingsAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                SetupBackendConnectionManager(settings.ServerIp);
+
+                // Acquiring another lease reuses this shared startup task.
+                await backendConnections.EnsurePrewarmedConnectionAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                Utilities.CancelIgnoringCallbackErrors(cts);
+                throw;
+            }
+        }
+
+        private async Task PrewarmClientCertificateAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                // Preserve the certificate setup deadline when moving this work
+                // from the first accepted connection into shared startup.
+                using var certificateCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                await using var setupTimer = new Timer(
+                    static state => Utilities.CancelIgnoringCallbackErrors((CancellationTokenSource)state),
+                    certificateCts,
+                    connectionSetupTimeout,
+                    Timeout.InfiniteTimeSpan);
+
+                try
+                {
+                    using X509Certificate2 certificate = await certSource
+                        .GetValidClientCertificateAsync(certificateCts.Token)
+                        .ConfigureAwait(false);
+                    await setupTimer.DisposeAsync().ConfigureAwait(false);
+                    certificateCts.Token.ThrowIfCancellationRequested();
+                }
+                catch (OperationCanceledException ex) when (
+                    certificateCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+                {
+                    throw new TimeoutException("Cloud SQL client certificate preparation timed out.", ex);
+                }
+            }
+            catch
+            {
+                // WhenAll waits for both operations before startup failure cleanup.
+                Utilities.CancelIgnoringCallbackErrors(cts);
+                throw;
+            }
         }
 
         private void SetupBackendConnectionManager(string serverIp)

@@ -144,7 +144,7 @@ connection.Open();
 
 Calls to `StartProxyAsync` may share a running proxy for the same Cloud SQL instance and authentication identity. Each call returns its own disposable `ProxyInstance` lease. Dispose each returned instance when the caller no longer needs the proxy.
 
-The initial backend connectivity check runs once when a shared proxy starts. Acquiring another lease reuses that proxy without opening an additional backend connection, including when all backend slots are occupied.
+When a shared proxy starts, it prepares the client certificate alongside retrieving server settings and opening the initial backend TCP connection. Startup waits for both operations, so certificate errors are reported by `StartProxyAsync`. Initial client certificate preparation has a 30-second deadline. Acquiring another lease reuses that proxy without opening an additional backend connection, including when all backend slots are occupied.
 
 For credential-file authentication, each call reads a snapshot of the file's current contents. Calls with different contents use separate shared proxies; existing leases continue using their original credentials until disposed.
 

@@ -23,6 +23,7 @@ namespace Expert1.CloudSqlProxy
         private readonly object keyLock = new();
 #endif
         private readonly SemaphoreSlim certRefreshLock = new(1, 1);
+        private readonly SemaphoreSlim settingsRefreshLock = new(1, 1);
         private readonly ReaderWriterLockSlim certCacheLock = new();
         private readonly SQLAdminService service;
         private RSA privateKey;
@@ -168,7 +169,13 @@ namespace Expert1.CloudSqlProxy
             if (!certRefreshLock.Wait(0))
                 return false;
 
-            DisposeResourcesWithRefreshLockHeld();
+            if (!settingsRefreshLock.Wait(0))
+            {
+                certRefreshLock.Release();
+                return false;
+            }
+
+            DisposeResourcesWithRefreshLocksHeld();
             return true;
         }
 
@@ -184,13 +191,15 @@ namespace Expert1.CloudSqlProxy
             }
 
             await certRefreshLock.WaitAsync().ConfigureAwait(false);
-            DisposeResourcesWithRefreshLockHeld();
+            await settingsRefreshLock.WaitAsync().ConfigureAwait(false);
+            DisposeResourcesWithRefreshLocksHeld();
         }
 
-        private void DisposeResourcesWithRefreshLockHeld()
+        private void DisposeResourcesWithRefreshLocksHeld()
         {
             if (Interlocked.Exchange(ref resourcesDisposed, 1) != 0)
             {
+                settingsRefreshLock.Release();
                 certRefreshLock.Release();
                 return;
             }
@@ -213,8 +222,10 @@ namespace Expert1.CloudSqlProxy
             }
             finally
             {
+                settingsRefreshLock.Release();
                 certRefreshLock.Release();
-                certRefreshLock.Dispose();
+                // Queued callers must be able to acquire the gates and observe
+                // disposal. Disposing a semaphore can abandon its async waiters.
                 certCacheLock.Dispose();
                 refreshCts.Dispose();
             }
@@ -232,7 +243,7 @@ namespace Expert1.CloudSqlProxy
 
         private async Task<ServerCertificateSettings> GetServerCertificateSettingsSlowAsync(CancellationToken cancellationToken)
         {
-            await certRefreshLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            await settingsRefreshLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
                 ThrowIfDisposed();
@@ -261,7 +272,7 @@ namespace Expert1.CloudSqlProxy
             }
             finally
             {
-                certRefreshLock.Release();
+                settingsRefreshLock.Release();
             }
         }
 
