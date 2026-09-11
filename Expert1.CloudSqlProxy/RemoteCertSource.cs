@@ -81,7 +81,7 @@ namespace Expert1.CloudSqlProxy
                     await Task.Delay(delay, token).ConfigureAwait(false);
                     await GetServerCertificateSettingsAsync(token).ConfigureAwait(false);
                     using X509Certificate2 certificate = await GetValidClientCertificateAsync(token).ConfigureAwait(false);
-                    delay = refreshLoopTime;
+                    delay = GetNextRefreshDelay(certificate);
                     retryDelay = initialRefreshRetryDelay;
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -97,6 +97,27 @@ namespace Expert1.CloudSqlProxy
                     retryDelay = TimeSpan.FromTicks(Math.Min(retryDelay.Ticks * 2, maxRefreshRetryDelay.Ticks));
                     TraceRefreshFailure(ex, delay);
                 }
+            }
+        }
+
+        private TimeSpan GetNextRefreshDelay(X509Certificate2 certificate)
+        {
+            certCacheLock.EnterReadLock();
+            try
+            {
+                // A cache hit may be due for renewal before another full interval elapses.
+                TimeSpan certificateDelay = certificate.NotAfter - DateTime.Now - refreshWindow;
+                TimeSpan settingsDelay = refreshLoopTime - TimeSpan.FromMilliseconds(
+                    Environment.TickCount64 - serverCertificateRefreshTimestamp);
+
+                // Check whichever cache is due first, without spinning on short-lived certificates.
+                long delayTicks = Math.Min(certificateDelay.Ticks, settingsDelay.Ticks);
+                return TimeSpan.FromTicks(Math.Clamp(
+                    delayTicks, initialRefreshRetryDelay.Ticks, refreshLoopTime.Ticks));
+            }
+            finally
+            {
+                certCacheLock.ExitReadLock();
             }
         }
 
