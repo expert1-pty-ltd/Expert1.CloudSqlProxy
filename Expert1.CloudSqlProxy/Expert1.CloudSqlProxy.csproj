@@ -4,7 +4,7 @@
     <RootNamespace>Expert1.CloudSqlProxy</RootNamespace>
     <TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
     <PackageOutputPath>bin\Release\</PackageOutputPath>
-    <Version>2.0.10</Version>
+    <Version>2.0.11</Version>
     <Company>Expert1 Pty Ltd</Company>
     <Authors>Expert1 Pty Ltd</Authors>
     <Description>A .NET package for for connecting securely to your Cloud SQL instances for connecting securely to your Cloud SQL instances.</Description>
@@ -40,7 +40,7 @@
   </ItemGroup>
 
   <Target Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' AND '$(TargetFramework)' != '' " Name="SignAssemblies" AfterTargets="Build">
-    <Exec Command="&quot;C:\Program Files (x86)\Windows Kits\10\App Certification Kit\signtool.exe&quot; sign /tr http://timestamp.digicert.com /td sha256 /fd sha256 $(TargetDir)Expert1.CloudSqlProxy.dll" />
+    <Exec Command="&quot;C:\Program Files (x86)\Windows Kits\10\App Certification Kit\signtool.exe&quot; sign /n &quot;Expert 1 Pty Ltd&quot; /tr http://timestamp.digicert.com /td sha256 /fd sha256 $(TargetDir)Expert1.CloudSqlProxy.dll" />
   </Target>
 
 </Project>
